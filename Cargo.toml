@@ -4,6 +4,7 @@ members = [
     "crates/powermug-revision",
     "crates/powermug",
     "crates/powermug-sandbox",
+    "crates/powermug-core",
 ]
 
 [workspace.package]

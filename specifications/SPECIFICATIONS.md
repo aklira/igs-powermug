@@ -381,7 +381,7 @@ stateDiagram-v2
 1. read the exit status and record it in the audit log;
 2. degrade all points of the instance's sessions on every destination in less than 2 s (FUN-ACQ-009);
 3. refuse new commands for those sessions with `REJECTED_UNAVAILABLE`, and move any command in `EXECUTE_SENT` to `IN_DOUBT` (FUN-CMD-008, FUN-CMD-009);
-4. restart the instance with exponential backoff and jitter (initial 1 s, max 60 s, H), within a restart budget (default 5 restarts per 10 minutes, H);
+4. restart the instance with exponential backoff and jitter (initial 1 s, max 60 s, H), within a restart budget (default 5 restarts per 10 minutes, H). The count of consecutive failures is cleared only after the instance has run for 60 s (H), so that an instance that crashes right after its handshake keeps its backoff;
 5. quarantine the instance once the budget is spent and raise an alert. Only a new revision or the local action `restart_adapter` can release it.
 
 **PM-ADP-004.** A restarted South instance MUST reopen its sessions and trigger a general interrogation when the protocol allows. Each point MUST stay degraded until a fresh value arrives (FUN-ACQ-010). General interrogations MUST respect the cell's concurrency cap (FUN-SCA-005).

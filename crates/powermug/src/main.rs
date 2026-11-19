@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::VerifyingKey;
 use powermug_revision::canonical::content_id;
-use powermug_revision::{parse_strict_json, verify_signed_plan};
+use powermug_revision::{parse_strict_json, validate_stage1, verify_signed_plan};
 use powermug_sandbox::{cgroup, features, profile, Profile};
 
 #[derive(Debug, Parser)]
@@ -62,6 +62,12 @@ enum Cmd {
 enum RevisionAction {
     /// Print the content identifier of a revision document (RFC 8785, `id` excluded).
     Hash {
+        /// The revision file, strict JSON.
+        file: PathBuf,
+    },
+    /// Stage 1 of the validation (§10.4): envelope, schema and content identifier. Prints the
+    /// findings as canonical JSON, and exits with 1 when there is any.
+    Validate {
         /// The revision file, strict JSON.
         file: PathBuf,
     },
@@ -118,6 +124,7 @@ fn main() -> Result<()> {
     match cli.command {
         Cmd::Revision { action } => match action {
             RevisionAction::Hash { file } => revision_hash(&file),
+            RevisionAction::Validate { file } => revision_validate(&file),
             RevisionAction::VerifyPlan {
                 file,
                 public_key,
@@ -151,6 +158,18 @@ fn revision_hash(file: &Path) -> Result<()> {
     let document = read_strict(file)?;
     println!("{}", content_id("revision", &document)?);
     Ok(())
+}
+
+fn revision_validate(file: &Path) -> Result<()> {
+    let document = read_strict(file)?;
+    let findings = validate_stage1(&document);
+    let bytes = powermug_revision::canonical::canonical_bytes(&serde_json::to_value(&findings)?)?;
+    println!("{}", String::from_utf8(bytes)?);
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        std::process::exit(1);
+    }
 }
 
 fn revision_verify_plan(file: &Path, public_key: &Path, revision: &str) -> Result<()> {

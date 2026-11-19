@@ -14,6 +14,11 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "Unicode-3.0",
+    # Permissive, OSI approved. Pulled by jsonschema (MIT-0 via borrow-or-share, Zlib via
+    # foldhash). Accepted for the P1 validator; to confirm with the owner (SPECIFICATIONS.md
+    # §6.7 lists the production set for protocol libraries).
+    "MIT-0",
+    "Zlib",
 ]
 confidence-threshold = 0.93
 
