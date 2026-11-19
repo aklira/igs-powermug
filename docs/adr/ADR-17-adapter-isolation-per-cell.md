@@ -20,4 +20,4 @@ Each adapter instance is a separate process, spawned by the core through a minim
 
 ## Open points
 
-Uid allocation. SPECIFICATIONS.md §6.4 says "cell's uid range (default 20000–20999)". On this host, the only subordinate range is `100000:65536`. The specification must say which range applies in development and which in production. This is a follow-up on SPECIFICATIONS.md.
+Uid allocation is settled by SPECIFICATIONS.md §6.4 and PM-ADP-007: adapter uids are allocated inside the cell's user namespace, from 10000–10999 (H), and mapped to host subordinate ids. Development (rootless) uses `/etc/subuid`, `100000:65536` on this host. Production (rootful) declares the mapping in the Quadlet unit, with disjoint ranges per cell. The fixed host range `20000–20999` is not used.

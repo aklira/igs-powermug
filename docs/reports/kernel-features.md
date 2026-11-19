@@ -35,7 +35,7 @@ This host is a development machine. It is **not a qualified hardware profile** (
 
 ## Notes
 
-1. **Uid range differs between development and production.** SPECIFICATIONS.md §6.4 allocates uids from `20000–20999`. In a user namespace, the only range available here is `100000:65536`. The specification must say which range applies in development and which in production. This is a follow-up on the specification.
+1. **Uid range is allocated inside the cell's user namespace.** Per SPECIFICATIONS.md §6.4 and PM-ADP-007, adapter uids are 10000–10999 inside the container, mapped to host subordinate ids. Here, rootless mapping gives container uid 10000 → host uid 110000, from the `100000:65536` range of `/etc/subuid`. The fixed range `20000–20999` is not used.
 2. **Cgroup delegation is per-scope.** The core must run inside a delegated scope. The Quadlet unit uses `Delegate=yes` in production (§18.2). In development, run the core under `systemd-run --user --scope -p Delegate=yes`.
 3. **PM-ADP-005 applies.** Production refuses to start an adapter if a required feature is missing. On this host every required feature is present except nftables, which is not needed.
 

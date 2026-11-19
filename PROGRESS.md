@@ -136,7 +136,7 @@ Exit: ACC-009, ACC-012 pass; first major-release campaign complete.
 | 1 | ~~G-1: option a chosen~~ Done. Implementation is in `igs-iec104` issue #2 | P5 | `aklira/igs-iec104#2` |
 | 2 | Qualification hardware, two references | P2 measurements, P7 | `docs/bench.md` §2 |
 | 3 | ~~Open gaps in `igs-iec104`~~ Done: issues #2 to #5 | P2 to P8 | `aklira/igs-iec104` |
-| 4 | ~~Uid range~~ Done: §6.4 and PM-ADP-007 now use 10000–10999 inside the cell's user namespace. The kernel report note still describes the old range; to update | P1 | `specifications/SPECIFICATIONS.md` §6.4 |
+| 4 | ~~Uid range~~ Done: §6.4 and PM-ADP-007 now use 10000–10999 inside the cell's user namespace. Kernel report and ADR-17 updated | P1 | `specifications/SPECIFICATIONS.md` §6.4 |
 | 5 | Validate ADR-14, ADR-15, ADR-21 (currently Proposed) | P5, P6 | `docs/adr/` |
 
 ## Journal
