@@ -396,7 +396,7 @@ The spawner applies the sandbox profile declared for the adapter kind before `ex
 
 | Measure | Implementation |
 |---|---|
-| Dedicated uid and gid | Allocated from the cell's uid range (default 20000–20999), one per instance, stable across restarts |
+| Dedicated uid and gid | Allocated inside the cell's user namespace, from the range 10000–10999 (default, H), one per instance, stable across restarts. See PM-ADP-007 for the host mapping |
 | Namespaces | New mount, PID and IPC namespaces. The network namespace is shared with the cell. Network reach is limited by Landlock and by the cell's nftables rules |
 | Read-only root | The image's root is read-only. Each instance gets a private `tmpfs` work directory (default 64 MiB, H) and nothing else writable |
 | Filesystem access | Landlock ABI ≥ 1: read access to the binary, its libraries, the certificates and secrets declared for the instance; write access to its work directory only |
@@ -408,6 +408,13 @@ The spawner applies the sandbox profile declared for the adapter kind before `ex
 | Secrets | Passed as read-only file descriptors at spawn; never on the command line or in the environment |
 
 **PM-ADP-005.** If the kernel lacks a required sandbox feature (cgroup delegation, Landlock, seccomp), the core MUST refuse to start the adapter on a production profile and MUST report the missing feature. A bench profile MAY declare `sandbox: best_effort`, which is visible in capabilities and in every indicator report.
+
+**PM-ADP-007.** Adapter uids MUST be allocated inside the user namespace of the cell's container, from the range 10000–10999 (H), and never from host ids directly. The host ids come from the container's subordinate mapping:
+
+- **Rootless (development and bench):** the mapping is the user's `/etc/subuid` range. On the development host this is `100000:65536`, so container uid 10000 maps to host uid 110000.
+- **Rootful (production):** the mapping is declared in the Quadlet unit (`--uidmap`, or `--userns=auto`) and reserved for that cell. Two cells on a host MUST have disjoint mappings.
+
+The core MUST refuse to start if the range it needs is not mapped in its namespace. A fixed host range such as 20000–20999 MUST NOT be used: it can collide with the accounts of the host, and it is not accessible to a rootless cell.
 
 ### 6.5 Backpressure and batching
 

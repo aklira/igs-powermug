@@ -15,8 +15,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[!]` blocked, w
 - [x] ADR-13 to ADR-21 recorded, and positions on ADR-01 to ADR-12 (`docs/adr/`)
 - [!] Development hardware chosen. Blocked: the owner must choose the models of the two qualification references (`docs/bench.md` §2)
 - [x] Kernel features confirmed: cgroup v2 delegation, Landlock ABI, seccomp (`docs/reports/kernel-features.md`)
-- [~] Features needed from `igs-iec104` inventoried, gaps opened. Inventory done (`docs/reports/igs-iec104-gaps.md`); gaps not yet opened in the `igs-iec104` backlog, which needs the owner's approval
-- [ ] Bench set up: gridloop MVP environment, simulated RTUs, demo SCADA, Kafka, reachable from CI
+- [x] Features needed from `igs-iec104` inventoried, gaps opened. Inventory in `docs/reports/igs-iec104-gaps.md`. Issues opened on `aklira/igs-iec104`: #2 (G-1), #3 (G-2), #4 (G-3), #5 (G-4). G-5 concerns the bench, not the library, and is not opened there
+- [~] Bench set up: gridloop MVP environment, simulated RTUs, demo SCADA, Kafka, reachable from CI. Started on the development host: 17 containers up, Fledge healthy, SCADA connected to Fledge. S3 data path not active: S3 is deployed by the IBTNM engine, not by `compose up`. Not yet checked from CI
 - [ ] Gridloop changes agreed and ordered with the IBTNM side (list in `IMPLEMENTATION.md` §6.2)
 
 Exit: ADRs merged (done), bench reachable (not done), kernel report written (done). **P0 not exited.**
@@ -79,7 +79,7 @@ Exit: ACC-001, ACC-007, ACC-015, ACC-023, PM-ACC-010, PM-ACC-011 pass.
 - [ ] Graph checks and validation codes `PMV-*`
 - [ ] CLI: `revision diff`, `preview`, `build`, `sign`; `catalog export`
 - [ ] Cell-scope revisions (ADR-19)
-- [!] Cell scope with eleven stations on one listener. Blocked: gap G-1 in `igs-iec104`, decision needed (`docs/reports/igs-iec104-gaps.md`)
+- [!] Cell scope with eleven stations on one listener. Blocked until `igs-iec104` issue #2 (multi-station listener) is implemented; the decision (option a) is taken
 - [ ] gridloop: catalogue rename `igs-gateway@1` → `powermug@1`, `target-revision` schema 1.2.0
 
 Exit: ACC-017, ACC-019, ACC-024, PM-ACC-001, 005, 006, 007, 012, 013 pass.
@@ -133,13 +133,14 @@ Exit: ACC-009, ACC-012 pass; first major-release campaign complete.
 
 | # | Decision | Blocks | Where |
 |---|---|---|---|
-| 1 | G-1: one station per listener in `igs-iec104` (option a, recommended, or option b, eleven ports) | P5 | `docs/reports/igs-iec104-gaps.md` |
+| 1 | ~~G-1: option a chosen~~ Done. Implementation is in `igs-iec104` issue #2 | P5 | `aklira/igs-iec104#2` |
 | 2 | Qualification hardware, two references | P2 measurements, P7 | `docs/bench.md` §2 |
-| 3 | Open gaps G-1 to G-5 in the `igs-iec104` backlog | P2 to P8 | `docs/reports/igs-iec104-gaps.md` |
-| 4 | Uid range in development and in production | P1 | `docs/reports/kernel-features.md` note 1 |
+| 3 | ~~Open gaps in `igs-iec104`~~ Done: issues #2 to #5 | P2 to P8 | `aklira/igs-iec104` |
+| 4 | ~~Uid range~~ Done: §6.4 and PM-ADP-007 now use 10000–10999 inside the cell's user namespace. The kernel report note still describes the old range; to update | P1 | `specifications/SPECIFICATIONS.md` §6.4 |
 | 5 | Validate ADR-14, ADR-15, ADR-21 (currently Proposed) | P5, P6 | `docs/adr/` |
 
 ## Journal
 
 - **2026-11-19:** Specifications written and committed (`862d034`). Phase P0 started: ADRs, kernel report, `igs-iec104` inventory, bench description and P0 status committed (`93d5aed`). `.claude/` ignored (`09fb7cc`), pushed to origin.
+- **2026-11-19:** Gridloop bench started on the development host; S3 data path not active until the IBTNM engine deploys S3. G-1 option a chosen; issues #2 to #5 opened on `aklira/igs-iec104`.
 - **2026-11-19:** Findings from P0 to carry into the specification: the uid range in §6.4 does not match the development host; `igs-iec104` serves one station per listener, which conflicts with the `CELL_DC1` model.
