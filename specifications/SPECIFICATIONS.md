@@ -939,13 +939,15 @@ The states are those of [GW] §12.2: `UPLOADED` → `SCHEMA_VALIDATED` → `SEMA
 
 Powermug verifies the IBTNM signed plan envelope (`ibtnm.signed-plan`, schema 1.0.0) exactly as gridloop's `verify_signed_plan` does:
 
-1. `artifact_type` is `ibtnm.signed-plan`, and `manifest`, `payload` and `signature` are present;
+1. `artifact_type` is `ibtnm.signed-plan`, `schema_version` is `1.0.0`, and `manifest`, `payload` and `signature` are present. The envelope has no other member. Only `manifest`, `payload` and `signature` are covered by the signature, so the two other members are checked explicitly (PM-SIG-003);
 2. `manifest.algorithm` is `Ed25519` and `manifest.key_id` is a key in the cell's trust store. Key ids have the form `ed25519:sha256:<sha256 of the raw public key>`;
 3. the Ed25519 signature (base64) verifies over the RFC 8785 bytes of the manifest;
 4. `manifest.plan_id` equals `payload.id`, and `manifest.plan_sha256` equals the SHA-256 of the canonical payload;
 5. `manifest.runtime_capabilities_sha256` equals `payload.sources.runtime_capabilities_sha256` when present;
 6. the payload content id is valid, and `manifest.artifacts` equals the sorted list of `{id, sha256}` of `payload.artifacts`;
 7. each artifact's content id is valid, and exactly one artifact has the requested `revision_id`.
+
+**PM-SIG-003.** An envelope MUST have exactly the members `artifact_type`, `manifest`, `payload`, `schema_version` and `signature`, and `schema_version` MUST be `1.0.0`. Any other value is refused, even when the signature verifies. gridloop's verifier does not check `schema_version`, which the signature does not cover; this is a follow-up in §23.
 
 **PM-SIG-001.** The trust store MUST be provisioned at deployment, outside any revision, as a read-only file of authorized key ids and public keys. Rotation MUST allow an overlap of old and new keys ([GW] §15.11). The cell MUST NOT hold any private signing key.
 
@@ -1507,6 +1509,7 @@ The ADR texts live in `docs/adr/`, one file each, using the template of [GW] Lot
 | [AST] text | Replace `igs-gateway@1` by `powermug@1` in §4.1, §5.3, §11 (ACC-AST-004), §12 (L6), annex A and B.5 |
 | gridloop `catalogs/capabilities.json` | Add the `powermug@1` profile with its capabilities and limits (§11.2) |
 | gridloop `schemas/target-revision.schema.json` | Version 1.2.0: add `scope` (`partition` or `cell`); `rtu` required only for `partition`; `partitions` list for `cell`; `target_configuration` as a `oneOf` over `fledge-service-bundle` and `powermug.revision` |
+| gridloop `src/ibtnm/signing.py` | `verify_signed_plan` checks `artifact_type` only. Add the closed member list and `schema_version = 1.0.0` of PM-SIG-003 (the signature does not cover them) |
 | gridloop `schemas/target-api-v1.yaml` | Version 1.1.0: add `/revisions/remove`, `/actions/execute`, `/actions/rollback`, `/ownership/cede`, `/ownership/take` (§11.1), already used in code by `TargetBackend` |
 | gridloop `catalogs/indicators.json` | Version 2: indicators of §11.3, covering [GW] §12.7 |
 | gridloop `src/ibtnm/drivers/` | New `powermug.py` driver (§11.6) |

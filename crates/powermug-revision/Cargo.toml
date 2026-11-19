@@ -1,0 +1,24 @@
+[package]
+name = "powermug-revision"
+description = "Revision model, RFC 8785 identity and signed-plan verification for Powermug"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_json_canonicalizer = "0.3"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+base64 = "0.22"
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
