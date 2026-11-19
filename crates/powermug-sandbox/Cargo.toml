@@ -1,0 +1,19 @@
+[package]
+name = "powermug-sandbox"
+description = "Process sandbox for Powermug adapters: cgroup v2, Landlock, seccomp, no_new_privs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+landlock = "0.4"
+seccompiler = "0.5"
+nix = { version = "0.32", default-features = false, features = ["process", "signal", "fs", "ptrace"] }
+libc = "0.2"
+thiserror = "2"

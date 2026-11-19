@@ -407,6 +407,8 @@ The spawner applies the sandbox profile declared for the adapter kind before `ex
 | Core stores | Not reachable: the store directories are outside the instance's Landlock rules and owned by the core uid |
 | Secrets | Passed as read-only file descriptors at spawn; never on the command line or in the environment |
 
+**Implementation note (P1).** The seccomp allow-list is the minimum observed for the fake adapter's start-up and run, traced through the kernel audit log. It contains `execve`, because the spawner execs after the filter is installed; Landlock limits execution to the declared read paths. Protocol adapters with threads need `clone3` with restricted flags in their own profile. This list is reviewed before P1 exit (PROGRESS.md).
+
 **PM-ADP-005.** If the kernel lacks a required sandbox feature (cgroup delegation, Landlock, seccomp), the core MUST refuse to start the adapter on a production profile and MUST report the missing feature. A bench profile MAY declare `sandbox: best_effort`, which is visible in capabilities and in every indicator report.
 
 **PM-ADP-007.** Adapter uids MUST be allocated inside the user namespace of the cell's container, from the range 10000–10999 (H), and never from host ids directly. The host ids come from the container's subordinate mapping:
