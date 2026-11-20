@@ -9,10 +9,12 @@
 pub mod canonical;
 pub mod error;
 pub mod load;
+pub mod partition;
 pub mod signed;
 pub mod validate;
 
 pub use error::{LoadError, SignatureError};
 pub use load::parse_strict_json;
+pub use partition::validate_stage2;
 pub use signed::{verify_signed_plan, VerifiedPlan};
 pub use validate::{validate_stage1, Finding};

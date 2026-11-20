@@ -1379,6 +1379,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "powermug-bench"
+version = "0.1.0"
+dependencies = [
+ "powermug-core",
+ "powermug-pivot",
+ "powermug-store",
+ "tempfile",
+]
+
+[[package]]
 name = "powermug-contract"
 version = "0.1.0"
 dependencies = [

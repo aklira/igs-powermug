@@ -1,0 +1,18 @@
+[package]
+name = "powermug-bench"
+description = "Load bench of Powermug: measures the telemetry path from lane ingestion to journal commit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+powermug-core = { path = "../powermug-core" }
+powermug-pivot = { path = "../powermug-pivot" }
+powermug-store = { path = "../powermug-store" }
+tempfile = "3"
