@@ -220,6 +220,7 @@ pub struct Lane {
     lost: HashSet<SessionId>,
     last_snapshot_ns: u64,
     published: Vec<pb::Envelope>,
+    last_accepted_wall_ns: Option<i64>,
 }
 
 /// How often a lane takes a snapshot of its image (§7.2, H).
@@ -245,6 +246,7 @@ impl Lane {
             lost: HashSet::new(),
             last_snapshot_ns: now_ns,
             published: Vec::new(),
+            last_accepted_wall_ns: None,
         }
     }
 
@@ -440,6 +442,9 @@ impl Lane {
                 }
             }
         }
+        if !events.is_empty() {
+            self.last_accepted_wall_ns = Some(times.wall_ns);
+        }
         Ok(committed)
     }
 
@@ -543,6 +548,28 @@ impl Lane {
         let committed = self.append(&entries)?;
         self.lost.remove(&session);
         Ok(committed)
+    }
+
+    /// The wall-clock time of the last batch the lane accepted, if any.
+    #[must_use]
+    pub fn last_accepted_wall_ns(&self) -> Option<i64> {
+        self.last_accepted_wall_ns
+    }
+
+    /// The sessions of the table, each with whether it is up (not lost).
+    #[must_use]
+    pub fn session_states(&self) -> Vec<(SessionId, bool)> {
+        let mut sessions: Vec<SessionId> = self
+            .table
+            .iter()
+            .filter_map(|(_, spec)| spec.session)
+            .collect();
+        sessions.sort_by_key(|session| session.0);
+        sessions.dedup();
+        sessions
+            .into_iter()
+            .map(|session| (session, !self.lost.contains(&session)))
+            .collect()
     }
 
     /// Takes the envelopes of the point events committed since the last call, in

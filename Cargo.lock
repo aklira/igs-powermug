@@ -1558,6 +1558,8 @@ dependencies = [
  "axum",
  "base64",
  "ed25519-dalek",
+ "powermug-core",
+ "powermug-pivot",
  "powermug-revision",
  "powermug-store",
  "rcgen",

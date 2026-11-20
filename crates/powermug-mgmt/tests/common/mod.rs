@@ -83,8 +83,27 @@ pub fn client_without_certificate(pki: &Pki) -> Arc<ClientConfig> {
     )
 }
 
+/// Indicators that report nothing: the source of the tests that do not look at them.
+pub struct NoIndicators;
+
+impl powermug_core::IndicatorSource for NoIndicators {
+    fn sample(&self, _now_wall_ns: i64) -> Vec<powermug_core::Indicator> {
+        Vec::new()
+    }
+}
+
 /// Starts the API on a free loopback port, over `store`, trusting `trusted_key`.
 pub async fn serve(pki: &Pki, store: CriticalStore, trusted_key: VerifyingKey) -> SocketAddr {
+    serve_with(pki, store, trusted_key, std::sync::Arc::new(NoIndicators)).await
+}
+
+/// As [`serve`], with the indicators of `source`.
+pub async fn serve_with(
+    pki: &Pki,
+    store: CriticalStore,
+    trusted_key: VerifyingKey,
+    source: std::sync::Arc<dyn powermug_core::IndicatorSource>,
+) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let address = listener.local_addr().expect("address");
     let config = server_config(
@@ -93,7 +112,7 @@ pub async fn serve(pki: &Pki, store: CriticalStore, trusted_key: VerifyingKey) -
         pki.client_ca_pem.as_bytes(),
     )
     .expect("server TLS");
-    let api = Arc::new(Api::new(store, powermug_v1(), trusted_key));
+    let api = Arc::new(Api::new(store, powermug_v1(), trusted_key, source));
     tokio::spawn(async move {
         let _ = axum::serve(TlsListener::new(listener, config), router(api)).await;
     });

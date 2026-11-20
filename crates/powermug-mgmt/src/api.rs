@@ -6,6 +6,7 @@
 //! the signed plan's form for partition revisions is not decided yet.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -13,6 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use ed25519_dalek::VerifyingKey;
+use powermug_core::IndicatorSource;
 use powermug_revision::canonical::canonical_bytes;
 use powermug_revision::partition::{
     validate_stage1_partition, validate_stage2, validate_stage3, validate_stage4,
@@ -24,22 +26,28 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// The state the handlers share: the critical store and the target profile.
-#[derive(Debug)]
 pub struct Api {
     store: Mutex<CriticalStore>,
     profile: Profile,
     trusted_key: VerifyingKey,
+    indicators: Arc<dyn IndicatorSource>,
 }
 
 impl Api {
     /// The API over `store`, for the target `profile`. Signed plans are verified
     /// against `trusted_key` (§10.6).
     #[must_use]
-    pub fn new(store: CriticalStore, profile: Profile, trusted_key: VerifyingKey) -> Self {
+    pub fn new(
+        store: CriticalStore,
+        profile: Profile,
+        trusted_key: VerifyingKey,
+        indicators: Arc<dyn IndicatorSource>,
+    ) -> Self {
         Self {
             store: Mutex::new(store),
             profile,
             trusted_key,
+            indicators,
         }
     }
 
@@ -48,11 +56,20 @@ impl Api {
     }
 }
 
+impl std::fmt::Debug for Api {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Api")
+            .field("profile", &self.profile.name)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The routes of the subset.
 pub fn router(api: Arc<Api>) -> Router {
     Router::new()
         .route("/capabilities", get(capabilities))
         .route("/state", get(state))
+        .route("/indicators", get(indicators))
         .route("/revisions/prepare", post(prepare))
         .route("/revisions/activate", post(activate))
         .route("/revisions/rollback", post(rollback))
@@ -146,6 +163,30 @@ async fn capabilities(State(api): State<Arc<Api>>) -> Json<Value> {
         // not read that state, so it does not claim it.
         "sandbox": "unverified",
     }))
+}
+
+/// The neutral indicators of §11.3, measured at the time of the request.
+async fn indicators(State(api): State<Arc<Api>>) -> Json<Value> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let now_ns = i64::try_from(now.as_nanos()).unwrap_or(i64::MAX);
+    let indicators: Vec<Value> = api
+        .indicators
+        .sample(now_ns)
+        .into_iter()
+        .map(|indicator| {
+            json!({
+                "name": indicator.name,
+                "scope": indicator.scope,
+                "session": indicator.session,
+                "value": indicator.value,
+                "unit": indicator.unit,
+                "measured_at_ns": indicator.measured_at_ns,
+            })
+        })
+        .collect();
+    Json(json!({ "indicators": indicators }))
 }
 
 async fn state(State(api): State<Arc<Api>>) -> Result<Json<Value>, ApiError> {
