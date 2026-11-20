@@ -1556,6 +1556,8 @@ name = "powermug-mgmt"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
+ "ed25519-dalek",
  "powermug-revision",
  "powermug-store",
  "rcgen",

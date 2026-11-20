@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 axum = "0.8"
+ed25519-dalek = "2"
 powermug-revision = { path = "../powermug-revision" }
 powermug-store = { path = "../powermug-store" }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "logging"] }
@@ -24,5 +25,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
 
 [dev-dependencies]
+base64 = "0.22"
+ed25519-dalek = "2"
 rcgen = { version = "=0.14.7", default-features = false, features = ["ring", "pem"] }
 tempfile = "3"

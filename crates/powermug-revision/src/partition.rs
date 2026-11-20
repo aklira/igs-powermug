@@ -72,6 +72,29 @@ pub struct Session {
     pub id: String,
     pub adapter: String,
     pub common_address: u16,
+    /// Where the station listens. Carried in the signed revision (§10.3), so that the
+    /// endpoint is audited like the rest of the configuration.
+    pub endpoint: Endpoint,
+    pub transport_security: TransportSecurity,
+}
+
+/// The host and port of a station.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Endpoint {
+    /// An IP address or a name.
+    pub host: String,
+    pub port: u16,
+}
+
+/// The transport security of a session. `none` needs a justification (§10.3).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TransportSecurity {
+    /// `none` or `tls`.
+    pub mode: String,
+    #[serde(default)]
+    pub justification: Option<String>,
 }
 
 /// A point of the partition.
@@ -272,58 +295,141 @@ pub fn validate_stage2(document: &Value) -> Vec<Finding> {
         Err(finding) => return vec![finding],
     };
     let mut findings = Vec::new();
-    let mut push = |code: &'static str, pointer: String, message: String| {
-        findings.push(Finding {
-            code,
-            pointer,
-            message,
-        });
-    };
-
     if revision.api_version != "powermug/v1" || revision.kind != "PartitionRevision" {
-        push(
+        push_finding(
+            &mut findings,
             "PMV-SEM-000",
             String::new(),
             "apiVersion must be powermug/v1 and kind PartitionRevision".to_owned(),
         );
     }
+    let session_ids = check_sessions(&revision, &mut findings);
+    check_points(&revision, &session_ids, &mut findings);
+    findings.sort();
+    findings
+}
 
+fn push_finding(findings: &mut Vec<Finding>, code: &'static str, pointer: String, message: String) {
+    findings.push(Finding {
+        code,
+        pointer,
+        message,
+    });
+}
+
+/// Checks the sessions and their endpoints; returns the identifiers of the sessions.
+fn check_sessions(
+    revision: &PartitionRevision,
+    findings: &mut Vec<Finding>,
+) -> std::collections::HashSet<String> {
     let mut session_ids = std::collections::HashSet::new();
+    let mut endpoints = std::collections::HashSet::new();
     for (index, session) in revision.spec.sessions.iter().enumerate() {
         let pointer = format!("/spec/sessions/{index}");
         if !session_ids.insert(session.id.clone()) {
-            push(
+            push_finding(
+                findings,
                 "PMV-SEM-001",
                 pointer.clone(),
                 format!("session id {} is used twice", session.id),
             );
         }
         if session.common_address == 0 {
-            push(
+            push_finding(
+                findings,
                 "PMV-SEM-007",
-                pointer,
+                pointer.clone(),
                 format!(
                     "session {} has common address 0, which is not used",
                     session.id
                 ),
             );
         }
+        if session.endpoint.host.trim().is_empty() {
+            push_finding(
+                findings,
+                "PMV-SEM-008",
+                pointer.clone(),
+                format!("session {} has no host", session.id),
+            );
+        }
+        if session.endpoint.port == 0 {
+            push_finding(
+                findings,
+                "PMV-SEM-009",
+                pointer.clone(),
+                format!("session {} has port 0", session.id),
+            );
+        }
+        if !endpoints.insert((session.endpoint.host.clone(), session.endpoint.port)) {
+            push_finding(
+                findings,
+                "PMV-SEM-010",
+                pointer.clone(),
+                format!(
+                    "endpoint {}:{} is used by two sessions",
+                    session.endpoint.host, session.endpoint.port
+                ),
+            );
+        }
+        check_transport_security(session, &pointer, findings);
     }
+    session_ids
+}
 
+fn check_transport_security(session: &Session, pointer: &str, findings: &mut Vec<Finding>) {
+    match session.transport_security.mode.as_str() {
+        "tls" => {}
+        "none" => {
+            let justified = session
+                .transport_security
+                .justification
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty());
+            if !justified {
+                push_finding(
+                    findings,
+                    "PMV-SEM-012",
+                    pointer.to_owned(),
+                    format!(
+                        "session {} has no transport security and no justification",
+                        session.id
+                    ),
+                );
+            }
+        }
+        other => push_finding(
+            findings,
+            "PMV-SEM-011",
+            pointer.to_owned(),
+            format!("transport security {other} is not none or tls"),
+        ),
+    }
+}
+
+/// Checks the points: unique identifiers and addresses, existing sessions, classes,
+/// and the site prefix.
+fn check_points(
+    revision: &PartitionRevision,
+    session_ids: &std::collections::HashSet<String>,
+    findings: &mut Vec<Finding>,
+) {
     let mut point_ids = std::collections::HashSet::new();
     let mut addresses = std::collections::HashSet::new();
     let prefix = format!("{}/", revision.metadata.site);
     for (index, point) in revision.spec.points.iter().enumerate() {
         let pointer = format!("/spec/points/{index}");
         if !point_ids.insert(point.id.clone()) {
-            push(
+            push_finding(
+                findings,
                 "PMV-SEM-002",
                 pointer.clone(),
                 format!("point id {} is used twice", point.id),
             );
         }
         if !session_ids.contains(&point.session) {
-            push(
+            push_finding(
+                findings,
                 "PMV-SEM-003",
                 pointer.clone(),
                 format!(
@@ -333,7 +439,8 @@ pub fn validate_stage2(document: &Value) -> Vec<Finding> {
             );
         }
         if !addresses.insert((point.session.clone(), point.address)) {
-            push(
+            push_finding(
+                findings,
                 "PMV-SEM-004",
                 pointer.clone(),
                 format!(
@@ -343,14 +450,16 @@ pub fn validate_stage2(document: &Value) -> Vec<Finding> {
             );
         }
         if !CLASSES.contains(&point.class.as_str()) {
-            push(
+            push_finding(
+                findings,
                 "PMV-SEM-005",
                 pointer.clone(),
                 format!("class {} is not A, B, C or Critical", point.class),
             );
         }
         if !point.id.starts_with(&prefix) {
-            push(
+            push_finding(
+                findings,
                 "PMV-SEM-006",
                 pointer,
                 format!(
@@ -360,9 +469,6 @@ pub fn validate_stage2(document: &Value) -> Vec<Finding> {
             );
         }
     }
-
-    findings.sort();
-    findings
 }
 
 #[cfg(test)]
@@ -370,6 +476,17 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A session of the test document: a station on its own endpoint, without TLS.
+    fn session(id: &str, common_address: u16) -> Value {
+        json!({
+            "id": id,
+            "adapter": "iec104-client",
+            "common_address": common_address,
+            "endpoint": { "host": format!("10.3.0.{common_address}"), "port": 2404 },
+            "transport_security": { "mode": "none", "justification": "isolated process network" }
+        })
+    }
 
     /// The document with its content identifier set, as a producer writes it.
     fn sealed(mut document: Value) -> Value {
@@ -423,7 +540,7 @@ mod tests {
             "metadata": { "cell": "CELL_DC1", "site": "S3", "id": "partitionrevision:sha256:placeholder" },
             "spec": {
                 "requires": { "contract": "1.0", "capabilities": ["south.iec104"] },
-                "sessions": [ { "id": "s3-rtu1", "adapter": "iec104-client", "common_address": 3 } ],
+                "sessions": [ session("s3-rtu1", 3) ],
                 "points": [
                     { "id": "S3/TM_001", "session": "s3-rtu1", "address": 1, "class": "A" },
                     { "id": "S3/TM_002", "session": "s3-rtu1", "address": 2, "class": "B" }
@@ -447,7 +564,7 @@ mod tests {
         doc["spec"]["sessions"]
             .as_array_mut()
             .expect("array")
-            .push(json!({"id": "s3-rtu1", "adapter": "iec104-client", "common_address": 4}));
+            .push(session("s3-rtu1", 4));
         doc["spec"]["points"]
             .as_array_mut()
             .expect("array")
@@ -481,6 +598,43 @@ mod tests {
             codes(&validate_stage2(&doc)),
             vec!["PMV-SEM-005", "PMV-SEM-006"]
         );
+    }
+
+    #[test]
+    fn endpoint_checks_are_found() {
+        let mut doc = document();
+        doc["spec"]["sessions"][0]["endpoint"] = json!({ "host": " ", "port": 0 });
+        assert_eq!(
+            codes(&validate_stage2(&doc)),
+            vec!["PMV-SEM-008", "PMV-SEM-009"]
+        );
+    }
+
+    #[test]
+    fn two_sessions_on_one_endpoint_are_found() {
+        let mut doc = document();
+        doc["spec"]["sessions"]
+            .as_array_mut()
+            .expect("array")
+            .push(json!({
+                "id": "s3-rtu2",
+                "adapter": "iec104-client",
+                "common_address": 4,
+                "endpoint": { "host": "10.3.0.3", "port": 2404 },
+                "transport_security": { "mode": "tls" }
+            }));
+        assert_eq!(codes(&validate_stage2(&doc)), vec!["PMV-SEM-010"]);
+    }
+
+    #[test]
+    fn transport_security_needs_a_known_mode_and_a_justification_without_tls() {
+        let mut doc = document();
+        doc["spec"]["sessions"][0]["transport_security"] = json!({ "mode": "plain" });
+        assert_eq!(codes(&validate_stage2(&doc)), vec!["PMV-SEM-011"]);
+
+        let mut unjustified = document();
+        unjustified["spec"]["sessions"][0]["transport_security"] = json!({ "mode": "none" });
+        assert_eq!(codes(&validate_stage2(&unjustified)), vec!["PMV-SEM-012"]);
     }
 
     #[test]

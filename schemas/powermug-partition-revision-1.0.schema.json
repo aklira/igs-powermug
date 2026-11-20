@@ -25,6 +25,27 @@
     "spec"
   ],
   "$defs": {
+    "Endpoint": {
+      "description": "The host and port of a station.",
+      "type": "object",
+      "properties": {
+        "host": {
+          "description": "An IP address or a name.",
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port"
+      ]
+    },
     "Metadata": {
       "type": "object",
       "properties": {
@@ -117,15 +138,24 @@
           "maximum": 65535,
           "minimum": 0
         },
+        "endpoint": {
+          "description": "Where the station listens. Carried in the signed revision (§10.3), so that the\nendpoint is audited like the rest of the configuration.",
+          "$ref": "#/$defs/Endpoint"
+        },
         "id": {
           "type": "string"
+        },
+        "transport_security": {
+          "$ref": "#/$defs/TransportSecurity"
         }
       },
       "additionalProperties": false,
       "required": [
         "id",
         "adapter",
-        "common_address"
+        "common_address",
+        "endpoint",
+        "transport_security"
       ]
     },
     "Spec": {
@@ -152,6 +182,27 @@
         "requires",
         "sessions",
         "points"
+      ]
+    },
+    "TransportSecurity": {
+      "description": "The transport security of a session. `none` needs a justification (§10.3).",
+      "type": "object",
+      "properties": {
+        "justification": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "mode": {
+          "description": "`none` or `tls`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode"
       ]
     }
   }
