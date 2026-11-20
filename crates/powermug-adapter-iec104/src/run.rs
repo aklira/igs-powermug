@@ -139,7 +139,9 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
 
     let mut report = Report::default();
     let mut started: Option<usize> = None;
-    let mut lost = false;
+    // Whether the core has been told that the session is up. A new instance has told it
+    // nothing yet, so its first connection is reported too (indicator and lane state).
+    let mut up_reported = false;
     let mut epoch: u64 = 0;
     let mut sequence: u64 = 0;
     tokio::pin!(stop);
@@ -159,8 +161,8 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
                         started = Some(to);
                         epoch += 1;
                         report.switches += 1;
-                        if lost {
-                            lost = false;
+                        if !up_reported {
+                            up_reported = true;
                             session_change(&channel, &options, true, "started", &mut report).await;
                         }
                     }
@@ -169,8 +171,8 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
                         Event::Disconnected(error) | Event::ConnectFailed(error) => {
                             if started == Some(index) {
                                 started = None;
-                                if !lost {
-                                    lost = true;
+                                if up_reported {
+                                    up_reported = false;
                                     let reason = error.to_string();
                                     session_change(&channel, &options, false, &reason, &mut report).await;
                                 }

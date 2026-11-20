@@ -3,21 +3,25 @@
 //!
 //! The telemetry log has a single writer for the whole cell (§7.2): every lane holds
 //! a handle onto it. The lanes are rebuilt from the journal at start (§7.2, PM-TEL-003),
-//! so that nothing is valid until a fresh value. The South adapters are not started by
-//! the cell yet: the lanes receive values only through the adapter contract.
+//! so that nothing is valid until a fresh value. The South instances of the configuration
+//! are started and supervised by the cell (see [`adapters`]); their values reach the lanes
+//! only through the adapter contract.
 
+pub mod adapters;
 pub mod config;
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use powermug_core::lane::{Lane, LaneError, TableError};
+use powermug_core::supervisor::Policy;
 use powermug_core::{Clock, Indicator, IndicatorSource};
 use powermug_mgmt::{load_trusted_key, server_config, Api, KeyError, TlsError, TlsListener};
 use powermug_revision::profile::powermug_v1;
 use powermug_store::{CriticalStore, GenerationError, GroupJournal, StoreError, Writer};
 use thiserror::Error;
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 
 pub use config::{CellConfig, ConfigError};
 
@@ -143,10 +147,34 @@ pub async fn serve(
         config.cell
     );
 
+    // The South instances stop with the cell: a stop signal reaches each supervisor.
+    let (stop, stopped) = watch::channel(false);
+    let instances = adapters::instances(&config)?;
+    let supervisors: Vec<_> = instances
+        .into_iter()
+        .map(|instance| {
+            let lane = Arc::clone(&cell.lanes[instance.lane]);
+            tokio::spawn(adapters::supervise(
+                instance,
+                lane,
+                Policy::default(),
+                stopped.clone(),
+            ))
+        })
+        .collect();
+
     let app = powermug_mgmt::router(Arc::clone(&cell.api));
+    let stopping = stop.clone();
     let served = axum::serve(TlsListener::new(listener, tls), app)
-        .with_graceful_shutdown(shutdown)
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            let _ = stopping.send(true);
+        })
         .await;
+    let _ = stop.send(true);
+    for supervisor in supervisors {
+        let _ = supervisor.await;
+    }
     cell.close();
     served.map_err(|err| CellError::Listen(err.to_string()))
 }

@@ -1,5 +1,5 @@
-//! The `powermug` binary. Roles: revision tools, the spawner, a fake adapter for tests,
-//! and diagnostics. The core and the protocol adapters arrive with later phases.
+//! The `powermug` binary. Roles: revision tools, the spawner, the protocol adapters
+//! (IEC 60870-5-104), a fake adapter for tests, and diagnostics. The core is `powermug-cell`.
 
 #![forbid(unsafe_code)]
 
@@ -13,6 +13,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::VerifyingKey;
+use powermug_adapter_iec104::{run as run_iec104, Settings};
 use powermug_revision::canonical::content_id;
 use powermug_revision::profile::powermug_v1;
 use powermug_revision::{
@@ -46,6 +47,10 @@ enum Cmd {
         /// Paths the adapter may read and write.
         #[arg(long = "write")]
         write: Vec<PathBuf>,
+        /// Apply the protocol-adapter profile (network and runtime calls) instead of the
+        /// minimal one.
+        #[arg(long)]
+        protocol: bool,
         /// The adapter binary and its arguments.
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -90,6 +95,12 @@ enum RevisionAction {
 
 #[derive(Debug, Subcommand)]
 enum AdapterKind {
+    /// The IEC 60870-5-104 adapter: a controlling station feeding the core's socket.
+    Iec104 {
+        /// The settings the cell wrote for this instance (JSON).
+        #[arg(long)]
+        settings: PathBuf,
+    },
     /// A fake adapter that misbehaves on request.
     Fake {
         /// What the fake does.
@@ -139,9 +150,11 @@ fn main() -> Result<()> {
             cgroup,
             read,
             write,
+            protocol,
             command,
-        } => spawner(cgroup.as_deref(), read, write, &command),
+        } => spawner(cgroup.as_deref(), read, write, protocol, &command),
         Cmd::Adapter { kind } => match kind {
+            AdapterKind::Iec104 { settings } => iec104_adapter(&settings),
             AdapterKind::Fake { fault, seconds } => fake_adapter(fault, seconds),
         },
         Cmd::Diag { action } => match action {
@@ -207,12 +220,17 @@ fn spawner(
     cgroup_dir: Option<&Path>,
     read: Vec<PathBuf>,
     write: Vec<PathBuf>,
+    protocol: bool,
     command: &[String],
 ) -> Result<()> {
     if let Some(dir) = cgroup_dir {
         cgroup::join(dir, std::process::id()).context("joining the cgroup")?;
     }
-    let profile = Profile::adapter(read, write);
+    let profile = if protocol {
+        Profile::protocol_adapter(read, write)
+    } else {
+        Profile::adapter(read, write)
+    };
     if let Err(e) = profile::apply(&profile) {
         eprintln!("spawner: sandbox not applied: {e}");
         std::process::exit(111);
@@ -222,6 +240,21 @@ fn spawner(
     let err = Command::new(program).args(args).exec();
     eprintln!("spawner: exec {program} failed: {err}");
     std::process::exit(111);
+}
+
+/// Runs the IEC 60870-5-104 adapter until it fails. The cell stops it by killing the process,
+/// so there is no graceful stop here.
+fn iec104_adapter(settings: &Path) -> Result<()> {
+    let text =
+        fs::read_to_string(settings).with_context(|| format!("reading {}", settings.display()))?;
+    let options = Settings::from_json(&text)?.into_options()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting the runtime")?;
+    let report = runtime.block_on(run_iec104(options, std::future::pending::<()>()))?;
+    eprintln!("adapter iec104 stopped: {report:?}");
+    Ok(())
 }
 
 fn fake_adapter(fault: Fault, seconds: u64) -> Result<()> {

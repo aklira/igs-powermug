@@ -8,8 +8,10 @@ pub mod convert;
 pub mod mapping;
 pub mod run;
 pub mod serve;
+pub mod settings;
 
 pub use convert::{asdu as convert_asdu, Context, ConvertError, Converted, Unmapped};
 pub use mapping::{DuplicateObject, Mapping};
 pub use run::{capabilities, run, Options, Report, RunError};
 pub use serve::{serve, ServeError, ServeOptions, ServeReport};
+pub use settings::{MappedPoint, Settings, SettingsError};

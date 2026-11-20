@@ -17,6 +17,7 @@ Volume=pm-dc1-critical:/var/lib/powermug/critical:Z
 Volume=pm-dc1-telemetry:/var/lib/powermug/telemetry:Z
 Volume=/etc/powermug/dc1/trust:/etc/powermug/trust:ro,Z
 Volume=/etc/powermug/dc1/secrets:/etc/powermug/secrets:ro,Z
+Tmpfs=/run/powermug/adapters:rw,mode=0700
 Network=host
 DropCapability=ALL
 PodmanArgs=--cgroupns=private --pids-limit=512 --memory=4g

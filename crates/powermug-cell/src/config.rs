@@ -3,11 +3,12 @@
 //! The file names the telemetry log and the critical store, the management interface
 //! with its TLS material and its trusted key, and one lane per partition with its
 //! points. A South session belongs to one lane only, so that the indicators of the
-//! cell name each session once.
+//! cell name each session once. The optional `adapters` section names the South
+//! instances the cell starts: one per session, each in a sandbox.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use powermug_core::lane::{PointSpec, PointTable, SessionId};
 use powermug_store::EventClass;
@@ -22,6 +23,45 @@ pub struct CellConfig {
     pub critical_db: PathBuf,
     pub management: ManagementConfig,
     pub lanes: Vec<LaneConfig>,
+    #[serde(default)]
+    pub adapters: Option<AdaptersConfig>,
+}
+
+/// The South instances the cell starts (§6.1, §6.2).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdaptersConfig {
+    /// The `powermug` binary: its `spawner` role sandboxes each instance, its `adapter`
+    /// role runs it. Absolute path.
+    pub binary: PathBuf,
+    /// Directory of the instances. Each keeps its settings and its socket in a
+    /// subdirectory named after its session. Absolute path.
+    pub directory: PathBuf,
+    pub instances: Vec<InstanceConfig>,
+}
+
+/// One South instance. Its points are the points of its session in the lanes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstanceConfig {
+    /// The session the instance serves. It must be the session of points of a lane.
+    pub session: u32,
+    /// The protocol: only `iec104` exists.
+    pub kind: String,
+    /// The controlled stations of the redundancy group, in priority order.
+    pub stations: Vec<SocketAddr>,
+    /// The common address of the stations; 0 is not an address.
+    pub common_address: u16,
+    /// Credits of the stream (§6.5, default 4,096 events).
+    #[serde(default = "default_window_events")]
+    pub window_events: u32,
+}
+
+/// The credit window of the stream when the configuration does not set one (§6.5).
+pub const DEFAULT_WINDOW_EVENTS: u32 = 4096;
+
+fn default_window_events() -> u32 {
+    DEFAULT_WINDOW_EVENTS
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -81,6 +121,22 @@ pub enum ConfigError {
     },
     #[error("point {0} is listed twice")]
     DuplicatePoint(String),
+    #[error("adapter for session {0} names a session with no point in any lane")]
+    AdapterWithoutLane(u32),
+    #[error("session {0} has two adapter instances")]
+    DuplicateAdapter(u32),
+    #[error("adapter of session {session} has kind {kind}, and only iec104 exists")]
+    UnknownAdapterKind { session: u32, kind: String },
+    #[error("adapter of session {0} has no station")]
+    AdapterWithoutStation(u32),
+    #[error("adapter of session {0} has common address 0, which is not an address")]
+    ZeroCommonAddress(u32),
+    #[error("adapter of session {session} has window {window}; it must be between 1 and {DEFAULT_WINDOW_EVENTS}")]
+    BadWindow { session: u32, window: u32 },
+    #[error("{0} must be an absolute path")]
+    RelativePath(&'static str),
+    #[error("session {session} has two points at object address {address}")]
+    DuplicateAddress { session: u32, address: u32 },
 }
 
 impl CellConfig {
@@ -132,8 +188,68 @@ impl CellConfig {
                 }
             }
         }
+        if let Some(adapters) = &self.adapters {
+            check_adapters(adapters, &self.lanes, &lane_of_session)?;
+        }
         Ok(())
     }
+}
+
+fn check_adapters(
+    adapters: &AdaptersConfig,
+    lanes: &[LaneConfig],
+    lane_of_session: &HashMap<u32, &str>,
+) -> Result<(), ConfigError> {
+    if !adapters.binary.is_absolute() {
+        return Err(ConfigError::RelativePath("adapters.binary"));
+    }
+    if !adapters.directory.is_absolute() {
+        return Err(ConfigError::RelativePath("adapters.directory"));
+    }
+    let mut seen = HashSet::new();
+    for instance in &adapters.instances {
+        if !seen.insert(instance.session) {
+            return Err(ConfigError::DuplicateAdapter(instance.session));
+        }
+        if instance.kind != "iec104" {
+            return Err(ConfigError::UnknownAdapterKind {
+                session: instance.session,
+                kind: instance.kind.clone(),
+            });
+        }
+        if !lane_of_session.contains_key(&instance.session) {
+            return Err(ConfigError::AdapterWithoutLane(instance.session));
+        }
+        if instance.stations.is_empty() {
+            return Err(ConfigError::AdapterWithoutStation(instance.session));
+        }
+        if instance.common_address == 0 {
+            return Err(ConfigError::ZeroCommonAddress(instance.session));
+        }
+        if instance.window_events == 0 || instance.window_events > DEFAULT_WINDOW_EVENTS {
+            return Err(ConfigError::BadWindow {
+                session: instance.session,
+                window: instance.window_events,
+            });
+        }
+        // The adapter maps objects by address: two points of its session may not share one.
+        let mut addresses = HashSet::new();
+        for point in lanes.iter().flat_map(|lane| &lane.points) {
+            if point.session == instance.session && !addresses.insert(point.address) {
+                return Err(ConfigError::DuplicateAddress {
+                    session: instance.session,
+                    address: point.address,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The directory of the instance of `session` under the adapters directory.
+#[must_use]
+pub fn instance_directory(adapters: &AdaptersConfig, session: u32) -> PathBuf {
+    Path::new(&adapters.directory).join(session.to_string())
 }
 
 /// The class of a configured point, if it names one.
@@ -247,6 +363,79 @@ mod tests {
             Err(ConfigError::NoPoint("S3".into()))
         );
         assert_eq!(CellConfig::from_json(&text("")), Err(ConfigError::NoLane));
+    }
+
+    fn with_adapters(instance: &str) -> String {
+        text(LANE_S3).replacen(
+            "\n}",
+            &format!(
+                ",\n  \"adapters\": {{\"binary\": \"/usr/bin/powermug\", \"directory\": \"/run/powermug/adapters\", \"instances\": [{instance}]}}\n}}"
+            ),
+            1,
+        )
+    }
+
+    const GOOD_INSTANCE: &str =
+        r#"{"session": 1, "kind": "iec104", "stations": ["127.0.0.1:2404"], "common_address": 1}"#;
+
+    #[test]
+    fn a_valid_adapter_instance_is_read_with_the_default_window() {
+        let config = CellConfig::from_json(&with_adapters(GOOD_INSTANCE)).expect("valid");
+        let adapters = config.adapters.expect("section");
+        assert_eq!(adapters.instances[0].window_events, DEFAULT_WINDOW_EVENTS);
+    }
+
+    #[test]
+    fn an_adapter_is_checked_against_the_lanes_and_its_own_fields() {
+        let cases = [
+            (
+                r#"{"session": 9, "kind": "iec104", "stations": ["127.0.0.1:2404"], "common_address": 1}"#,
+                ConfigError::AdapterWithoutLane(9),
+            ),
+            (
+                r#"{"session": 1, "kind": "dnp3", "stations": ["127.0.0.1:2404"], "common_address": 1}"#,
+                ConfigError::UnknownAdapterKind {
+                    session: 1,
+                    kind: "dnp3".into(),
+                },
+            ),
+            (
+                r#"{"session": 1, "kind": "iec104", "stations": [], "common_address": 1}"#,
+                ConfigError::AdapterWithoutStation(1),
+            ),
+            (
+                r#"{"session": 1, "kind": "iec104", "stations": ["127.0.0.1:2404"], "common_address": 0}"#,
+                ConfigError::ZeroCommonAddress(1),
+            ),
+            (
+                r#"{"session": 1, "kind": "iec104", "stations": ["127.0.0.1:2404"], "common_address": 1, "window_events": 5000}"#,
+                ConfigError::BadWindow {
+                    session: 1,
+                    window: 5000,
+                },
+            ),
+        ];
+        for (instance, expected) in cases {
+            assert_eq!(
+                CellConfig::from_json(&with_adapters(instance)),
+                Err(expected),
+                "{instance}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_adapters_for_one_session_and_relative_paths_are_refused() {
+        let twice = format!("{GOOD_INSTANCE}, {GOOD_INSTANCE}");
+        assert_eq!(
+            CellConfig::from_json(&with_adapters(&twice)),
+            Err(ConfigError::DuplicateAdapter(1))
+        );
+        let relative = with_adapters(GOOD_INSTANCE).replace("/usr/bin/powermug", "powermug");
+        assert_eq!(
+            CellConfig::from_json(&relative),
+            Err(ConfigError::RelativePath("adapters.binary"))
+        );
     }
 
     #[test]

@@ -30,6 +30,17 @@ impl Profile {
             syscalls: seccomp::adapter_default(),
         }
     }
+
+    /// A profile for a protocol adapter: the network and runtime calls of
+    /// [`seccomp::protocol_adapter`], and the given paths.
+    #[must_use]
+    pub fn protocol_adapter(read_paths: Vec<PathBuf>, write_paths: Vec<PathBuf>) -> Self {
+        Self {
+            read_paths,
+            write_paths,
+            syscalls: seccomp::protocol_adapter(),
+        }
+    }
 }
 
 /// Applies the profile to the calling process: `no_new_privs`, then Landlock, then seccomp.

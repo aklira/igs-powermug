@@ -14,8 +14,27 @@
       "site": "S3",
       "revision": 1,
       "points": [
-        {"id": "S3/TM_001", "session": 1, "address": 101, "class": "A"}
+        {
+          "id": "S3/TM_001",
+          "session": 1,
+          "address": 101,
+          "class": "A"
+        }
       ]
     }
-  ]
+  ],
+  "adapters": {
+    "binary": "/usr/bin/powermug",
+    "directory": "/run/powermug/adapters",
+    "instances": [
+      {
+        "session": 1,
+        "kind": "iec104",
+        "stations": [
+          "192.0.2.10:2404"
+        ],
+        "common_address": 1
+      }
+    ]
+  }
 }

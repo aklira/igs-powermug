@@ -72,6 +72,40 @@ pub fn adapter_default() -> Vec<i64> {
     calls.to_vec()
 }
 
+/// [`adapter_default`] plus the calls of a protocol adapter that talks over TCP and over its
+/// core's Unix socket: sockets, `epoll`, timers and pipes of the async runtime. The adapter
+/// runs a single-threaded runtime, so no thread-creation call is added. `ioctl` is needed by
+/// the standard library to set non-blocking mode; the filter cannot restrict its arguments
+/// here, which is a review item (PROGRESS.md).
+#[must_use]
+pub fn protocol_adapter() -> Vec<i64> {
+    let mut calls: std::collections::BTreeSet<i64> = adapter_default().into_iter().collect();
+    calls.extend([
+        libc::SYS_socket,
+        libc::SYS_socketpair,
+        libc::SYS_connect,
+        libc::SYS_getsockopt,
+        libc::SYS_setsockopt,
+        libc::SYS_getsockname,
+        libc::SYS_getpeername,
+        libc::SYS_sendto,
+        libc::SYS_recvfrom,
+        libc::SYS_sendmsg,
+        libc::SYS_recvmsg,
+        libc::SYS_shutdown,
+        libc::SYS_epoll_create1,
+        libc::SYS_epoll_ctl,
+        libc::SYS_epoll_pwait,
+        libc::SYS_epoll_wait,
+        libc::SYS_eventfd2,
+        libc::SYS_timerfd_create,
+        libc::SYS_timerfd_settime,
+        libc::SYS_pipe2,
+        libc::SYS_ioctl,
+    ]);
+    calls.into_iter().collect()
+}
+
 /// Installs an allow-list filter on the calling thread's process.
 ///
 /// # Errors
