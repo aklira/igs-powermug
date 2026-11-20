@@ -9,13 +9,23 @@
 //! Point fields beyond the identifier, the session, the object address and the class
 //! are not in §10.3 and are defined here by default, to be confirmed.
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::canonical::content_id;
+use crate::error::SignatureError;
 use crate::validate::Finding;
 
+/// The JSON Schema of the partition revision, generated from the types below.
+const PARTITION_SCHEMA: &str =
+    include_str!("../../../schemas/powermug-partition-revision-1.0.schema.json");
+
+/// The kind of the content identifier of a partition revision.
+const PARTITION_KIND: &str = "partitionrevision";
+
 /// A partition revision of the P2 subset.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PartitionRevision {
     #[serde(rename = "apiVersion")]
@@ -25,18 +35,21 @@ pub struct PartitionRevision {
     pub spec: Spec,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
     pub cell: String,
     pub site: String,
+    /// Content identifier: `partitionrevision:sha256:<hex>` of the document without
+    /// this member (the canonical JSON of RFC 8785).
+    pub id: String,
     /// Id of the revision this one was prepared against. Absent for the first one.
     /// Not in §10.3: a default of this subset, to confirm.
     #[serde(default)]
     pub parent: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
     pub requires: Requires,
@@ -45,7 +58,7 @@ pub struct Spec {
 }
 
 /// What the revision needs from the target: the contract version and the capabilities.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Requires {
     pub contract: String,
@@ -53,7 +66,7 @@ pub struct Requires {
 }
 
 /// A South session. Only the IEC 104 client adapter is in the P2 subset.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
     pub id: String,
@@ -62,7 +75,7 @@ pub struct Session {
 }
 
 /// A point of the partition.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Point {
     /// Prefixed by the site, for example `S3/TM_001` (FUN-SCA-010).
@@ -150,6 +163,74 @@ pub fn validate_stage3(document: &Value, profile: &crate::profile::Profile) -> V
             "/spec/points",
             format!("{points} points exceed the limit of {}", limits.max_points),
         );
+    }
+    findings.sort();
+    findings
+}
+
+/// The JSON Schema of a partition revision, as generated from the types.
+#[must_use]
+pub fn partition_schema() -> String {
+    let schema = schemars::schema_for!(PartitionRevision);
+    let mut text = serde_json::to_string_pretty(&schema).unwrap_or_default();
+    text.push('\n');
+    text
+}
+
+/// The content identifier of a partition revision: its canonical JSON without
+/// `metadata.id`.
+///
+/// # Errors
+///
+/// Returns [`SignatureError::Canonical`] when the document cannot be canonicalized.
+pub fn partition_content_id(document: &Value) -> Result<String, SignatureError> {
+    let mut content = document.clone();
+    if let Some(metadata) = content.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove("id");
+    }
+    content_id(PARTITION_KIND, &content)
+}
+
+/// Stage 1 of the validation (§10.4) for a partition revision: the document matches
+/// the schema generated from the types, and its `metadata.id` is its content identifier.
+#[must_use]
+pub fn validate_stage1_partition(document: &Value) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    match serde_json::from_str::<Value>(PARTITION_SCHEMA)
+        .map_err(|err| err.to_string())
+        .and_then(|schema| jsonschema::validator_for(&schema).map_err(|err| err.to_string()))
+    {
+        Ok(validator) => {
+            for error in validator.iter_errors(document) {
+                findings.push(Finding {
+                    code: "PMV-ENV-001",
+                    pointer: error.instance_path().to_string(),
+                    message: error.to_string(),
+                });
+            }
+        }
+        Err(message) => findings.push(Finding {
+            code: "PMV-ENV-000",
+            pointer: String::new(),
+            message,
+        }),
+    }
+    let declared = document
+        .get("metadata")
+        .and_then(|metadata| metadata.get("id"))
+        .and_then(Value::as_str);
+    match partition_content_id(document) {
+        Ok(expected) if declared == Some(expected.as_str()) => {}
+        Ok(expected) => findings.push(Finding {
+            code: "PMV-ENV-002",
+            pointer: "/metadata/id".to_owned(),
+            message: format!("the id is not the content identifier {expected}"),
+        }),
+        Err(err) => findings.push(Finding {
+            code: "PMV-ENV-002",
+            pointer: "/metadata/id".to_owned(),
+            message: err.to_string(),
+        }),
     }
     findings.sort();
     findings
@@ -290,11 +371,56 @@ mod tests {
 
     use super::*;
 
+    /// The document with its content identifier set, as a producer writes it.
+    fn sealed(mut document: Value) -> Value {
+        let id = partition_content_id(&document).expect("canonical");
+        document["metadata"]["id"] = json!(id);
+        document
+    }
+
+    #[test]
+    fn the_checked_in_schema_is_the_one_generated_from_the_types() {
+        assert_eq!(
+            PARTITION_SCHEMA,
+            partition_schema(),
+            "schemas/powermug-partition-revision-1.0.schema.json is out of date: run `cargo test -p powermug-revision -- --ignored regenerate_schema`"
+        );
+    }
+
+    #[test]
+    #[ignore = "writes the checked-in schema; run it after changing the partition types"]
+    fn regenerate_schema() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../schemas/powermug-partition-revision-1.0.schema.json"
+        );
+        std::fs::write(path, partition_schema()).expect("writes the schema");
+    }
+
+    #[test]
+    fn a_sealed_document_passes_stage_one() {
+        assert_eq!(validate_stage1_partition(&sealed(document())), Vec::new());
+    }
+
+    #[test]
+    fn a_wrong_content_identifier_is_found() {
+        let findings = validate_stage1_partition(&document());
+        assert_eq!(codes_of(&findings), vec!["PMV-ENV-002"]);
+    }
+
+    #[test]
+    fn a_field_the_schema_does_not_know_is_found() {
+        let mut doc = document();
+        doc["spec"]["unexpected"] = json!(1);
+        let findings = validate_stage1_partition(&sealed(doc));
+        assert!(codes_of(&findings).contains(&"PMV-ENV-001"), "{findings:?}");
+    }
+
     fn document() -> Value {
         json!({
             "apiVersion": "powermug/v1",
             "kind": "PartitionRevision",
-            "metadata": { "cell": "CELL_DC1", "site": "S3" },
+            "metadata": { "cell": "CELL_DC1", "site": "S3", "id": "partitionrevision:sha256:placeholder" },
             "spec": {
                 "requires": { "contract": "1.0", "capabilities": ["south.iec104"] },
                 "sessions": [ { "id": "s3-rtu1", "adapter": "iec104-client", "common_address": 3 } ],

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PartitionRevision",
+  "description": "A partition revision of the P2 subset.",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/Spec"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "$defs": {
+    "Metadata": {
+      "type": "object",
+      "properties": {
+        "cell": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Content identifier: `partitionrevision:sha256:<hex>` of the document without\nthis member (the canonical JSON of RFC 8785).",
+          "type": "string"
+        },
+        "parent": {
+          "description": "Id of the revision this one was prepared against. Absent for the first one.\nNot in §10.3: a default of this subset, to confirm.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "site": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cell",
+        "site",
+        "id"
+      ]
+    },
+    "Point": {
+      "description": "A point of the partition.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "The information object address of the point in its session.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "class": {
+          "description": "`A`, `B`, `C` or `Critical` (§7.5).",
+          "type": "string"
+        },
+        "id": {
+          "description": "Prefixed by the site, for example `S3/TM_001` (FUN-SCA-010).",
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "session",
+        "address",
+        "class"
+      ]
+    },
+    "Requires": {
+      "description": "What the revision needs from the target: the contract version and the capabilities.",
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "contract": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "capabilities"
+      ]
+    },
+    "Session": {
+      "description": "A South session. Only the IEC 104 client adapter is in the P2 subset.",
+      "type": "object",
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "common_address": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "adapter",
+        "common_address"
+      ]
+    },
+    "Spec": {
+      "type": "object",
+      "properties": {
+        "points": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Point"
+          }
+        },
+        "requires": {
+          "$ref": "#/$defs/Requires"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Session"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requires",
+        "sessions",
+        "points"
+      ]
+    }
+  }
+}

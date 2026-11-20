@@ -904,7 +904,7 @@ spec:
   change_class: HOT          # declared; checked against the computed class
 ```
 
-The complete schema is published as JSON Schema draft 2020-12 in `schemas/powermug-revision-1.0.schema.json`. It is generated from the Rust types of `powermug-revision`, so the schema and the parser cannot diverge.
+The partition document of this section is the source of truth for a partition revision (decided 2026-11-20). Its JSON Schema draft 2020-12 is `schemas/powermug-partition-revision-1.0.schema.json`, generated from the Rust types of `powermug-revision`, so the schema and the parser cannot diverge. Its `metadata.id` is the content identifier of the document without that member (RFC 8785, prefix `partitionrevision:sha256:`). The gridloop `target-revision` envelope is the input of the gridloop driver, not the validated format.
 
 ### 10.4 Validation
 
