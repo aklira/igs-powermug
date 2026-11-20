@@ -1333,7 +1333,7 @@ An Ansible role in `deploy/` installs a profile: Podman, units, volumes, trust s
 
 ## 19. Code organisation
 
-One Cargo workspace in this repository, edition 2021, MSRV aligned with the IGS stacks (1.85):
+One Cargo workspace in this repository, edition 2021, MSRV 1.89 (decided 2026-11-20, required by rusqlite 0.41 for RUSTSEC-2026-0459; the IGS stacks are at 1.85, to be confirmed with their owners):
 
 ```text
 proto/                       Protobuf: powermug.pivot.v1, powermug.adapter.v1

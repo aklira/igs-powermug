@@ -15,8 +15,8 @@ workspace = true
 powermug-pivot = { path = "../powermug-pivot" }
 prost = "0.14"
 thiserror = "2"
-# Pinned to the last release with a Rust 1.75 MSRV: 0.14.6 and later need 1.88,
-# and the workspace declares 1.85.
+# Pinned to 0.14.5. Later releases need Rust 1.88, which the workspace MSRV
+# (1.89) now allows; moving to them is a separate change.
 tonic = { version = "=0.14.5", default-features = false, features = ["server", "transport", "codegen", "router"] }
 tonic-prost = "=0.14.5"
 tokio = { version = "1", features = ["net", "rt", "macros", "io-util", "sync"] }

@@ -1,0 +1,22 @@
+[package]
+name = "powermug-store"
+description = "Telemetry log of Powermug: SQLite in WAL mode, one transaction per committed batch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Pinned to 0.41.1, which bundles SQLite 3.54.1: earlier releases bundle SQLite
+# versions affected by RUSTSEC-2026-0459. rusqlite 0.41 needs Rust 1.89, the
+# workspace MSRV.
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

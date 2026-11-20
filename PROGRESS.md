@@ -23,7 +23,7 @@ Exit: ADRs merged (done), bench reachable (not done), kernel report written (don
 
 ### P1 · Foundations (4 weeks)
 
-- [~] Cargo workspace, CI workflow (fmt, clippy, tests, cargo-deny, MSRV 1.85; written, not run on a runner), `cargo-deny` configuration (passes). Not done: `buf` checks, aarch64 builds
+- [~] Cargo workspace, CI workflow (fmt, clippy, tests, cargo-deny, MSRV 1.89; written, not run on a runner), `cargo-deny` configuration (passes). Not done: `buf` checks, aarch64 builds
 - [~] `powermug-pivot`: quality model (§5.2, with the IEC 104 QDS mapping and loss flag), compact `PointEvent` with `EventId` (PM-PIV-001), and the Protobuf subset of `powermug.pivot.v1` (`proto/powermug/pivot/v1/pivot.proto`: envelope, value, quality) compiled with `protox` and `prost` 0.14, with strict conversions. 16 tests, round trip on every valid quality. Not done: event families of [GW] §9.1, `TimeQuality`, `native_extension` (`Any`), the `buf breaking` check (PM-PIV-002), the first released baseline to compare against. Carried to P2
 - [~] `powermug-contract`: `powermug.adapter.v1` subset (`DescribeCapabilities`, `StreamEvents`, `AckBatch`), handshake decision, message bounds PM-ADP-002, credit window, peer identity check, gRPC transport over a Unix socket with tonic 0.14.5 and `SO_PEERCRED` through tonic's connection info (32 tests, 9 of them end to end). Not done: the other RPCs (configuration, commands, recovery, health, North), the `DURABLE` acknowledgement (no store yet), the adapter SDK as its own crate. Carried to P2
 - [~] `powermug-revision`: strict JSON loader, RFC 8785, content ids, signed-plan verification, stage 1 validation (envelope, schema, content id, `PMV-ENV-*`). Not done: YAML loader, stages 2 to 4, cell and partition revision types
@@ -51,7 +51,7 @@ Open review items of the sandbox, to close before P2 exit:
 
 - [ ] `iec104-client` and `iec104-server` adapters on `igs-iec104`
 - [ ] Partition lanes, ingestion, telemetry writer with group commit, process image
-- [ ] Telemetry log, snapshots, image rebuild at start
+- [~] Telemetry log, snapshots, image rebuild at start. Done: the `events` table and its writes (`powermug-store`, 6 tests, blocked on decision 6 for the SQLite version). Not done: group commit writer thread, snapshots, cursors, retention, image rebuild
 - [ ] Validation stages 2 to 4 for the P2 subset; prepare, activate, rollback
 - [ ] Target API v1 (`/capabilities`, `/state`, `/revisions/*`, `/indicators`), mTLS
 - [ ] Containerfile, Quadlet template, bench profile
@@ -149,10 +149,12 @@ Exit: ACC-009, ACC-012 pass; first major-release campaign complete.
 | 3 | ~~Open gaps in `igs-iec104`~~ Done: issues #2 to #5 | P2 to P8 | `aklira/igs-iec104` |
 | 4 | ~~Uid range~~ Done: §6.4 and PM-ADP-007 now use 10000–10999 inside the cell's user namespace. Kernel report and ADR-17 updated | P1 | `specifications/SPECIFICATIONS.md` §6.4 |
 | 5 | Validate ADR-14, ADR-15, ADR-21 (currently Proposed) | P5, P6 | `docs/adr/` |
+| 6 | ~~MSRV~~ Done: workspace MSRV raised to 1.89 for rusqlite 0.41 (RUSTSEC-2026-0459). Open: the IGS stacks are at 1.85, to confirm with their owners (`SPECIFICATIONS.md` §15). CI `msrv` job now on 1.89 | P2 telemetry log | `Cargo.toml`, `.github/workflows/ci.yml` |
 
 ## Journal
 
 - **2026-11-20:** Resumed. Workspace tests pass (sandbox fault test runs only in a delegated scope). Added `powermug-pivot` (quality, `PointEvent`, `EventId`), 11 tests, clippy and fmt clean. Protobuf not started: `protoc` and `buf` are not installed on the host and there is no passwordless sudo, so the codegen choice (`protox` in pure Rust, or installed `protoc`) is open. Changes not committed.
+- **2026-11-20:** P2 starts: `powermug-store` with the telemetry log (`events` table, WAL, `synchronous=FULL`, one transaction per batch, class C refused, duplicate event ids refused atomically), 6 tests. The SQLite version is blocked on decision 6 above. Changes not committed.
 - **2026-11-20:** UDS transport added to `powermug-contract`. The handshake direction was wrong in the previous commit: the core serves both services, the adapter is the client (SPECIFICATIONS §6.1), so `DescribeCapabilities` takes the adapter's `Capabilities` and returns `HandshakeResponse`. tonic is pinned to 0.14.5 (MSRV 1.75) and `tonic-build` too, because 0.14.6 and later need Rust 1.88. Nine end-to-end tests over a real socket. `cargo deny` reports duplicate-version warnings (foldhash, hashbrown, prettyplease, syn), not failures. Changes not committed.
 - **2026-11-20:** Adapter contract subset added (`powermug-contract`): handshake, South event stream, bounds, credits, peer identity decisions, 23 tests. RPC names follow [GW] §8.2 where they differ from SPECIFICATIONS §6.1, recorded as Q9 there; the pivot version rule is exact match, recorded as Q10. Transport not started. Changes not committed.
 - **2026-11-20:** Codegen chosen: `protox` 0.10 with `prost` 0.14, so neither `protoc` nor `buf` is needed to build. First Protobuf subset of `powermug.pivot.v1` added with strict conversions to the hot-path types. Clippy clean, `cargo deny` ok, MSRV declared 1.85 in the three new crates, not verified on a 1.85 toolchain. Changes not committed.
