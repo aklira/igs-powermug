@@ -18,8 +18,8 @@ use tower::service_fn;
 use crate::credit::{CreditError, CreditWindow};
 use crate::proto::v1::{
     adapter_control_client::AdapterControlClient, adapter_data_client::AdapterDataClient, AckBatch,
-    Capabilities, CommunicationAck, EventBatch, HandshakeResponse, InterrogateRequest,
-    SubscribeRequest,
+    Capabilities, CommunicationAck, DeliveryAck, DeliveryBatch, EventBatch, HandshakeResponse,
+    InterrogateRequest,
 };
 use powermug_pivot::proto::v1::CommunicationState;
 
@@ -257,17 +257,19 @@ pub async fn interrogate_state(
     Ok(envelopes)
 }
 
-/// Opens the stream of the events the core commits from now on.
+/// Opens the North subscription: the core sends its numbered batches, and the
+/// adapter sends the sequence numbers it has applied through the returned sender.
 ///
 /// # Errors
 ///
 /// Returns [`ClientError::Status`] when the core refuses the subscription.
-pub async fn subscribe_events(
+pub async fn publish_events(
     channel: Channel,
-) -> Result<tonic::Streaming<powermug_pivot::proto::v1::Envelope>, ClientError> {
-    let stream = AdapterDataClient::new(channel)
-        .subscribe_events(SubscribeRequest {})
+) -> Result<(mpsc::Sender<DeliveryAck>, tonic::Streaming<DeliveryBatch>), ClientError> {
+    let (acks, rx) = mpsc::channel::<DeliveryAck>(256);
+    let batches = AdapterDataClient::new(channel)
+        .publish_events(ReceiverStream::new(rx))
         .await?
         .into_inner();
-    Ok(stream)
+    Ok((acks, batches))
 }

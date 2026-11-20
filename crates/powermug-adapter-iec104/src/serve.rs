@@ -19,6 +19,7 @@ use igs_iec104_codec::elements::{Diq, DoublePoint, Qds, QualityFlags, ShortFloat
 use igs_iec104_codec::header::{CommonAddress, InformationObjectAddress};
 use powermug_contract::client::{self, ClientError};
 use powermug_contract::proto::v1 as pb;
+use powermug_contract::proto::v1::DeliveryAck;
 use powermug_pivot::proto::v1 as pivot;
 use powermug_pivot::{Detail, Quality, Validity, Value};
 use thiserror::Error;
@@ -153,6 +154,39 @@ fn station_value(envelope: &pivot::Envelope) -> Option<PointValue> {
     point_value(value, quality)
 }
 
+/// Writes one committed change to the station's image, and counts it.
+fn apply_change(
+    handle: &igs_iec104::server::ServerHandle,
+    options: &ServeOptions,
+    envelope: &pivot::Envelope,
+    report: &mut ServeReport,
+) {
+    let Some((common, address)) = options.mapping.object_of(&envelope.point_id) else {
+        report.unmapped += 1;
+        return;
+    };
+    if common != options.common_address {
+        report.unmapped += 1;
+        return;
+    }
+    let (Some(object), Some(value)) = (
+        InformationObjectAddress::new(address),
+        station_value(envelope),
+    ) else {
+        report.unsupported += 1;
+        return;
+    };
+    let Ok(time) = clock::now_utc() else {
+        report.unsupported += 1;
+        return;
+    };
+    if handle.update(object, value, time).is_ok() {
+        report.updates += 1;
+    } else {
+        report.unsupported += 1;
+    }
+}
+
 /// Serves the station until `stop` completes, or the core ends the event stream.
 ///
 /// # Errors
@@ -167,7 +201,7 @@ pub async fn serve(
     let channel = client::connect(&options.core_socket).await?;
     client::describe_capabilities(channel.clone(), capabilities(&options)).await?;
     let state = client::interrogate_state(channel.clone(), &options.session_id).await?;
-    let mut events = client::subscribe_events(channel).await?;
+    let (acks, mut deliveries) = client::publish_events(channel).await?;
 
     let station = Server::bind(
         ServerConfig::new(options.listen, CommonAddress::new(options.common_address)),
@@ -216,29 +250,14 @@ pub async fn serve(
     let outcome = loop {
         tokio::select! {
             () = &mut stop => break Ok(()),
-            message = events.message() => match message {
-                Ok(Some(envelope)) => {
-                    let Some((common, address)) = options.mapping.object_of(&envelope.point_id) else {
-                        report.unmapped += 1;
-                        continue;
-                    };
-                    if common != options.common_address {
-                        report.unmapped += 1;
-                        continue;
+            message = deliveries.message() => match message {
+                Ok(Some(batch)) => {
+                    for envelope in &batch.events {
+                        apply_change(&handle, &options, envelope, &mut report);
                     }
-                    let (Some(object), Some(value)) = (
-                        InformationObjectAddress::new(address),
-                        station_value(&envelope),
-                    ) else {
-                        report.unsupported += 1;
-                        continue;
-                    };
-                    if let Ok(time) = clock::now_utc() {
-                        if handle.update(object, value, time).is_ok() {
-                            report.updates += 1;
-                        } else {
-                            report.unsupported += 1;
-                        }
+                    // Acknowledged once applied: the core keeps the batch until then.
+                    if acks.send(DeliveryAck { sequence: batch.sequence }).await.is_err() {
+                        break Err(ServeError::Stream("the core stopped reading the acknowledgements".to_owned()));
                     }
                 }
                 Ok(None) => break Ok(()),

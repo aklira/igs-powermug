@@ -1,25 +1,28 @@
 //! The adapter's loop: a controlling station on `igs-iec104`, feeding the core
-//! over the adapter contract (SPECIFICATIONS §6.2, §7.1, §7.6).
+//! over the adapter contract (SPECIFICATIONS §6.2, §7.1, §7.6, PM-TEL-005).
 //!
-//! The loop connects to the core and makes the handshake, then opens one
-//! `StreamEvents` call. Each time the station's data transfer starts, it asks
-//! for a general interrogation. Monitoring ASDUs are converted and sent as
-//! batches. A lost connection is reported to the core as a lost session, and
-//! its return as a restored one.
+//! The adapter connects to one station, or to a redundancy group of several. In
+//! a group, one connection is started at a time and the library starts the next
+//! one when it is lost; the library also interrogates the station after every
+//! start, so that no change is missed (§10.5 of igs-iec104).
+//!
+//! The session of the core follows the started connection: when it is lost, the
+//! core is told the session is lost, and when the group starts a connection
+//! again, the session is restored.
 
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use igs_iec104::client::{Client, ClientConfig, Event};
+use igs_iec104::client::{ClientConfig, Event};
+use igs_iec104::redundancy::{RedundancyError, RedundancyEvent, RedundantClient};
 use igs_iec104::Delivery;
-use igs_iec104_codec::elements::Qoi;
 use igs_iec104_codec::header::CommonAddress;
-use igs_iec104_link::TransferState;
 use powermug_contract::client::{self, ClientError, EventStream};
 use powermug_contract::proto::v1 as pb;
 use powermug_pivot::proto::v1 as pivot;
+use thiserror::Error;
 use uuid::Uuid;
 
 use crate::convert::{asdu as convert_asdu, Context, ConvertError};
@@ -28,9 +31,10 @@ use crate::mapping::Mapping;
 /// Settings of one adapter instance.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// The controlled station, to connect to.
-    pub station: SocketAddr,
-    /// The common address of the station.
+    /// The controlled stations of the redundancy group, in priority order. One
+    /// station is a group of one.
+    pub stations: Vec<SocketAddr>,
+    /// The common address of the stations.
     pub common_address: u16,
     /// The socket the core serves this instance on.
     pub core_socket: PathBuf,
@@ -50,8 +54,10 @@ pub struct Options {
 /// What the loop did, returned when it stops.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Report {
-    /// Connections made to the station.
+    /// Connections of the group that were established.
     pub connections: u64,
+    /// Changes of the started connection, the first start included.
+    pub switches: u64,
     /// Batches sent to the core.
     pub batches: u64,
     /// Events sent to the core.
@@ -64,6 +70,15 @@ pub struct Report {
     pub rejected: u64,
     /// Session changes the core refused.
     pub refused_reports: u64,
+}
+
+/// The loop could not run.
+#[derive(Debug, Error)]
+pub enum RunError {
+    #[error(transparent)]
+    Core(#[from] ClientError),
+    #[error("the redundancy group cannot start: {0}")]
+    Group(RedundancyError),
 }
 
 /// The capabilities the adapter declares at the handshake.
@@ -104,22 +119,26 @@ fn event_id() -> [u8; 16] {
     *Uuid::now_v7().as_bytes()
 }
 
-/// Runs until `stop` completes, or the station client ends.
+/// Runs until `stop` completes, or the group ends.
 ///
 /// # Errors
 ///
-/// Returns [`ClientError`] when the core cannot be reached, refuses the
-/// handshake, or refuses the stream.
-pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Report, ClientError> {
+/// Returns [`RunError::Core`] when the core cannot be reached, refuses the
+/// handshake or the stream, and [`RunError::Group`] when the group has no station.
+pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Report, RunError> {
     let channel = client::connect(&options.core_socket).await?;
     client::describe_capabilities(channel.clone(), capabilities(&options)).await?;
     let mut stream = EventStream::open(channel.clone(), options.window_events).await?;
 
-    let mut station = Client::connect(ClientConfig::new(
-        options.station,
-        CommonAddress::new(options.common_address),
-    ));
+    let endpoints = options
+        .stations
+        .iter()
+        .map(|address| ClientConfig::new(*address, CommonAddress::new(options.common_address)))
+        .collect();
+    let mut group = RedundantClient::connect(endpoints).map_err(RunError::Group)?;
+
     let mut report = Report::default();
+    let mut started: Option<usize> = None;
     let mut lost = false;
     let mut epoch: u64 = 0;
     let mut sequence: u64 = 0;
@@ -133,58 +152,60 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
                     report.rejected += 1;
                 }
             }
-            event = station.next_event() => {
+            event = group.next_event() => {
                 let Some(event) = event else { break };
                 match event {
-                    Event::Connected => {
+                    RedundancyEvent::Switched { to, .. } => {
+                        started = Some(to);
                         epoch += 1;
-                        report.connections += 1;
+                        report.switches += 1;
                         if lost {
                             lost = false;
-                            session_change(&channel, &options, true, "connected", &mut report).await;
-                        }
-                        station.start_data_transfer().await.ok();
-                    }
-                    Event::Disconnected(error) | Event::ConnectFailed(error) => {
-                        if !lost {
-                            lost = true;
-                            let reason = error.to_string();
-                            session_change(&channel, &options, false, &reason, &mut report).await;
+                            session_change(&channel, &options, true, "started", &mut report).await;
                         }
                     }
-                    Event::Delivery(Delivery::Transfer(TransferState::Started)) => {
-                        station.interrogate(Qoi::STATION).await.ok();
-                    }
-                    Event::Delivery(Delivery::Asdu(asdu)) => {
-                        let context = Context {
-                            site_id: &options.site_id,
-                            mapping: &options.mapping,
-                            revision: options.revision,
-                            received_ns: now_ns(),
-                        };
-                        match convert_asdu(&asdu, &context, &mut event_id) {
-                            Ok(converted) => {
-                                report.unmapped += converted.unmapped.len() as u64;
-                                if converted.envelopes.is_empty() {
-                                    continue;
+                    RedundancyEvent::Endpoint { index, event } => match event {
+                        Event::Connected => report.connections += 1,
+                        Event::Disconnected(error) | Event::ConnectFailed(error) => {
+                            if started == Some(index) {
+                                started = None;
+                                if !lost {
+                                    lost = true;
+                                    let reason = error.to_string();
+                                    session_change(&channel, &options, false, &reason, &mut report).await;
                                 }
-                                sequence += 1;
-                                let events = converted.envelopes;
-                                let count = events.len() as u64;
-                                let batch = pb::EventBatch {
-                                    source_epoch: epoch,
-                                    batch_sequence: sequence,
-                                    events,
-                                };
-                                stream.send(batch).await?;
-                                report.batches += 1;
-                                report.events += count;
                             }
-                            Err(ConvertError::UnsupportedType(_)) => report.unsupported += 1,
                         }
-                    }
-                    Event::Closed => break,
-                    _ => {}
+                        Event::Delivery(Delivery::Asdu(asdu)) => {
+                            let context = Context {
+                                site_id: &options.site_id,
+                                mapping: &options.mapping,
+                                revision: options.revision,
+                                received_ns: now_ns(),
+                            };
+                            match convert_asdu(&asdu, &context, &mut event_id) {
+                                Ok(converted) => {
+                                    report.unmapped += converted.unmapped.len() as u64;
+                                    if converted.envelopes.is_empty() {
+                                        continue;
+                                    }
+                                    sequence += 1;
+                                    let events = converted.envelopes;
+                                    let count = events.len() as u64;
+                                    let batch = pb::EventBatch {
+                                        source_epoch: epoch,
+                                        batch_sequence: sequence,
+                                        events,
+                                    };
+                                    stream.send(batch).await?;
+                                    report.batches += 1;
+                                    report.events += count;
+                                }
+                                Err(ConvertError::UnsupportedType(_)) => report.unsupported += 1,
+                            }
+                        }
+                        _ => {}
+                    },
                 }
             }
         }

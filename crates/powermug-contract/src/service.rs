@@ -9,6 +9,7 @@
 //! committed it, or `REJECTED` with the reason. Its credits return with that
 //! last acknowledgement, so a refused batch does not shrink the window.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::mpsc;
@@ -22,11 +23,16 @@ use crate::handshake::{self, Offer, API_VERSION};
 use crate::peer::{self, ExpectedPeer, PeerCredentials};
 use crate::proto::v1::{
     adapter_control_server::AdapterControl, adapter_data_server::AdapterData, AckBatch, AckStatus,
-    Capabilities, CommunicationAck, EventBatch, HandshakeResponse, InterrogateRequest,
-    SubscribeRequest,
+    Capabilities, CommunicationAck, DeliveryAck, DeliveryBatch, EventBatch, HandshakeResponse,
+    InterrogateRequest,
 };
 use crate::sink::{BatchSink, Durability, Refusal};
 use powermug_pivot::proto::v1::CommunicationState;
+
+/// Batches a North subscriber may hold unacknowledged.
+pub const PUBLISH_WINDOW: usize = 256;
+/// Events per published batch, at most.
+pub const PUBLISH_BATCH: usize = 64;
 
 /// What the core requires of the instance it spawned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,10 +156,9 @@ fn commit(sink: &Mutex<Box<dyn BatchSink>>, batch: &EventBatch) -> Result<Durabi
 #[tonic::async_trait]
 impl AdapterData for CoreService {
     type StreamEventsStream = ReceiverStream<Result<AckBatch, Status>>;
+    type PublishEventsStream = ReceiverStream<Result<DeliveryBatch, Status>>;
     type InterrogateStateStream =
         tokio_stream::Iter<std::vec::IntoIter<Result<powermug_pivot::proto::v1::Envelope, Status>>>;
-    type SubscribeEventsStream =
-        ReceiverStream<Result<powermug_pivot::proto::v1::Envelope, Status>>;
 
     async fn interrogate_state(
         &self,
@@ -173,37 +178,61 @@ impl AdapterData for CoreService {
         Ok(Response::new(tokio_stream::iter(items)))
     }
 
-    async fn subscribe_events(
+    async fn publish_events(
         &self,
-        request: Request<SubscribeRequest>,
-    ) -> Result<Response<Self::SubscribeEventsStream>, Status> {
+        request: Request<Streaming<DeliveryAck>>,
+    ) -> Result<Response<Self::PublishEventsStream>, Status> {
         authenticate(&request, self.config.expected_peer)?;
         self.accepted().ok_or_else(|| {
             Status::failed_precondition("no accepted handshake for this instance")
         })?;
+        let mut acks = request.into_inner();
         let mut events = {
             let mut sink = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
             sink.subscribe()
         };
-        let (tx, rx) = mpsc::channel(256);
+        let (tx, rx) = mpsc::channel(PUBLISH_WINDOW);
         tokio::spawn(async move {
+            let mut next_sequence = 1u64;
+            let mut unacknowledged = BTreeSet::new();
             loop {
-                match events.recv().await {
-                    Ok(envelope) => {
-                        if tx.send(Ok(envelope)).await.is_err() {
+                let may_send = unacknowledged.len() < PUBLISH_WINDOW;
+                tokio::select! {
+                    ack = acks.message() => match ack {
+                        Ok(Some(ack)) => {
+                            unacknowledged.remove(&ack.sequence);
+                        }
+                        Ok(None) | Err(_) => return,
+                    },
+                    event = events.recv(), if may_send => {
+                        let first = match event {
+                            Ok(envelope) => envelope,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                // A lost event is reported, never skipped silently.
+                                let _ = tx
+                                    .send(Err(Status::data_loss(format!(
+                                        "the subscriber fell behind: {skipped} events were skipped"
+                                    ))))
+                                    .await;
+                                return;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        };
+                        let mut batch = vec![first];
+                        while batch.len() < PUBLISH_BATCH {
+                            match events.try_recv() {
+                                Ok(envelope) => batch.push(envelope),
+                                Err(_) => break,
+                            }
+                        }
+                        let sequence = next_sequence;
+                        next_sequence += 1;
+                        unacknowledged.insert(sequence);
+                        let delivery = DeliveryBatch { sequence, events: batch };
+                        if tx.send(Ok(delivery)).await.is_err() {
                             return;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        // A lost event is reported, never skipped silently.
-                        let _ = tx
-                            .send(Err(Status::data_loss(format!(
-                                "the subscriber fell behind: {skipped} events were skipped"
-                            ))))
-                            .await;
-                        return;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
             }
         });

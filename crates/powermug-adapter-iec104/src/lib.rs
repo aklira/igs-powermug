@@ -11,5 +11,5 @@ pub mod serve;
 
 pub use convert::{asdu as convert_asdu, Context, ConvertError, Converted, Unmapped};
 pub use mapping::{DuplicateObject, Mapping};
-pub use run::{capabilities, run, Options, Report};
+pub use run::{capabilities, run, Options, Report, RunError};
 pub use serve::{serve, ServeError, ServeOptions, ServeReport};

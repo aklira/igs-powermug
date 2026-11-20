@@ -45,6 +45,10 @@ struct Station {
 }
 
 async fn start_station() -> Station {
+    start_station_with(true).await
+}
+
+async fn start_station_with(status_on: bool) -> Station {
     let server = Server::bind(
         ServerConfig::new(
             "127.0.0.1:0".parse::<SocketAddr>().expect("addr"),
@@ -60,7 +64,7 @@ async fn start_station() -> Station {
         .add_point(
             InformationObjectAddress::new(1).expect("address"),
             PointValue::Single(Siq {
-                on: true,
+                on: status_on,
                 quality: QualityFlags::default(),
             }),
             false,
@@ -157,7 +161,7 @@ fn start_core() -> Core {
 
 fn options(station: SocketAddr, socket: std::path::PathBuf) -> Options {
     Options {
-        station,
+        stations: vec![station],
         common_address: 1,
         core_socket: socket,
         site_id: "S3".into(),
@@ -267,4 +271,55 @@ async fn station_loss_reaches_the_lane_as_a_lost_session() {
         guard.image().get(PointIndex(0)).map(|s| s.quality),
         Some(Quality::new(powermug_pivot::Validity::Invalid))
     );
+}
+
+#[tokio::test]
+async fn failover_in_the_group_moves_the_values_to_the_standby_station() {
+    // Station A reports ON, station B reports OFF. Which one the group starts first
+    // depends on which connects first, so the test stops whichever one is started.
+    let primary = start_station_with(true).await;
+    let standby = start_station_with(false).await;
+    let core = start_core();
+    let mut options = options(primary.addr, core.socket.clone());
+    options.stations = vec![primary.addr, standby.addr];
+    let (adapter_stop, adapter_stopped) = oneshot::channel::<()>();
+    let adapter = tokio::spawn(run(options, async {
+        let _ = adapter_stopped.await;
+    }));
+
+    let lane = Arc::clone(&core.lane);
+    let value = || {
+        lane.lock()
+            .expect("lock")
+            .image()
+            .get(PointIndex(0))
+            .map(|s| s.value)
+    };
+    let fed = wait_until(|| value().is_some(), 20).await;
+    assert!(fed, "the started station did not deliver its value");
+    let started_is_primary = value() == Some(Value::Bool(true));
+
+    // The started station goes away: the group starts the other one, interrogates it,
+    // and the lane follows its value.
+    let (stopped, other, expected) = if started_is_primary {
+        (primary, standby, Value::Bool(false))
+    } else {
+        (standby, primary, Value::Bool(true))
+    };
+    let _ = stopped.stop.send(());
+    let _ = stopped.task.await;
+    let followed = wait_until(|| value() == Some(expected), 30).await;
+
+    let _ = adapter_stop.send(());
+    let report = adapter.await.expect("joins").expect("runs");
+    let _ = core.stop.send(());
+    let _ = core.task.await;
+    let _ = other.stop.send(());
+    let _ = other.task.await;
+
+    assert!(
+        followed,
+        "the other station's value did not reach the lane: {report:?}"
+    );
+    assert!(report.switches >= 2, "{report:?}");
 }

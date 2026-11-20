@@ -138,8 +138,10 @@ service AdapterData {
   rpc ReportCommunication(powermug.pivot.v1.CommunicationState) returns (CommunicationAck);
   // North: the current state of the points of a session, for a general interrogation.
   rpc InterrogateState(InterrogateRequest) returns (stream powermug.pivot.v1.Envelope);
-  // North: the events committed by the core, from now on, for every point of the cell.
-  rpc SubscribeEvents(SubscribeRequest) returns (stream powermug.pivot.v1.Envelope);
+  // North: the events committed by the core, from now on. The core numbers each
+  // batch and sends at most a window of unacknowledged batches; the adapter
+  // acknowledges a batch once it has applied it.
+  rpc PublishEvents(stream DeliveryAck) returns (stream DeliveryBatch);
 }
 
 // Asks for the state of one session.
@@ -147,5 +149,13 @@ message InterrogateRequest {
   string session_id = 1;
 }
 
-// Asks for the events committed from now on.
-message SubscribeRequest {}
+// The events the core publishes, numbered from 1 for each subscription.
+message DeliveryBatch {
+  uint64 sequence = 1;
+  repeated powermug.pivot.v1.Envelope events = 2;
+}
+
+// The adapter has applied the batch with this sequence number.
+message DeliveryAck {
+  uint64 sequence = 1;
+}
