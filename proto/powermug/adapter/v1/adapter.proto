@@ -1,0 +1,130 @@
+// Adapter contract, package powermug.adapter.v1 (SPECIFICATIONS §6.1, [GW] §8.2
+// and §8.4).
+//
+// Status: first subset. The handshake (DescribeCapabilities) and the South
+// event stream (StreamEvents) are defined. The configuration, command, recovery,
+// health and North RPCs are not defined yet.
+//
+// Transport: gRPC over a Unix domain socket. The adapter is the gRPC client,
+// the core is the server. Field numbers are never reused (§9.3 of [GW]).
+
+syntax = "proto3";
+
+package powermug.adapter.v1;
+
+import "powermug/pivot/v1/pivot.proto";
+
+// Version of the API or of the pivot. The major number must match for the
+// instance to start (PM-ADP-001). Minor versions only add optional fields, so
+// a minor difference is accepted in both directions.
+message Version {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+// Role of the adapter on a protocol.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  // Controlling station (IEC 104 client).
+  ROLE_CLIENT = 1;
+  // Controlled station (IEC 104 server).
+  ROLE_SERVER = 2;
+}
+
+// A protocol the adapter speaks.
+message Protocol {
+  // Protocol name, for example "iec104".
+  string name = 1;
+  Role role = 2;
+  // Functions of the protocol, for example "general_interrogation", "clock_sync".
+  repeated string functions = 3;
+}
+
+// Limits the adapter declares. The core enforces them, and never accepts a
+// value above its own maximum (PM-ADP-002).
+message Limits {
+  // Events per EventBatch.
+  uint32 max_batch_events = 1;
+  // Bytes per EventBatch.
+  uint32 max_batch_bytes = 2;
+  // Bytes per command.
+  uint32 max_command_bytes = 3;
+  // Credits in the window: events the adapter may send before an AckBatch
+  // returns credits.
+  uint32 window_events = 4;
+  // Events per second, averaged over one second.
+  uint32 max_events_per_second = 5;
+}
+
+// Handshake content (SPECIFICATIONS §6.1, [GW] §8.2).
+message Capabilities {
+  Version api_version = 1;
+  // Pivot versions the adapter accepts.
+  repeated Version pivot_versions = 2;
+  repeated Protocol protocols = 3;
+  // Command variants supported, for example "single", "double",
+  // "set_point_scaled", "select_before_operate".
+  repeated string command_variants = 4;
+  Limits limits = 5;
+  // The adapter can recover after a crash without operator action.
+  bool crash_recovery = 6;
+  // Hardware and driver dependencies, free text.
+  repeated string hardware_dependencies = 7;
+  // SHA-256 of the adapter artifact, lowercase hex.
+  string artifact_sha256 = 8;
+  // Version of the protocol library the adapter links.
+  string protocol_library_version = 9;
+  // JSON Schema (draft 2020-12) of the adapter settings, with the value domain
+  // of each setting. Feeds the module catalogue entry (§11.5).
+  string settings_schema = 10;
+}
+
+// Core's request, sent first.
+message DescribeRequest {
+  // API version the core speaks.
+  Version api_version = 1;
+  // Pivot version the core emits.
+  Version pivot_version = 2;
+}
+
+// Batch of South events, from the adapter to the core.
+message EventBatch {
+  // Generation of the source session.
+  uint64 source_epoch = 1;
+  // Increases by one for each batch of the same epoch.
+  uint64 batch_sequence = 2;
+  // At most 1,024 events and 1 MiB (PM-ADP-002).
+  repeated powermug.pivot.v1.Envelope events = 3;
+}
+
+// Acknowledgement status (§8.4 of [GW]).
+enum AckStatus {
+  ACK_STATUS_UNSPECIFIED = 0;
+  // The core has the batch in memory.
+  ACK_STATUS_RECEIVED = 1;
+  // The core has the batch in the durable store. A South adapter may release
+  // its protocol acknowledgement only after this status, for durable classes.
+  ACK_STATUS_DURABLE = 2;
+  ACK_STATUS_REJECTED = 3;
+  ACK_STATUS_THROTTLED = 4;
+}
+
+// Acknowledgement from the core to the adapter.
+message AckBatch {
+  uint64 batch_sequence = 1;
+  AckStatus status = 2;
+  // Credits returned to the adapter with this acknowledgement.
+  uint32 credits_granted = 3;
+  // Bounded text, for REJECTED and THROTTLED.
+  string reason = 4;
+}
+
+service AdapterControl {
+  // Handshake: the adapter describes itself, and the core checks it.
+  rpc DescribeCapabilities(DescribeRequest) returns (Capabilities);
+}
+
+service AdapterData {
+  // South: events from the adapter, acknowledgements from the core.
+  rpc StreamEvents(stream EventBatch) returns (stream AckBatch);
+}

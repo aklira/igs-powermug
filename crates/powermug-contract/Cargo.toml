@@ -1,0 +1,21 @@
+[package]
+name = "powermug-contract"
+description = "Adapter contract of Powermug: handshake, bounds, credits and peer identity over powermug.adapter.v1"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+powermug-pivot = { path = "../powermug-pivot" }
+prost = "0.14"
+thiserror = "2"
+
+[build-dependencies]
+prost-build = "0.14"
+protox = "0.10"

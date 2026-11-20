@@ -995,6 +995,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "powermug-contract"
+version = "0.1.0"
+dependencies = [
+ "powermug-pivot",
+ "prost",
+ "prost-build",
+ "protox",
+ "thiserror",
+]
+
+[[package]]
 name = "powermug-core"
 version = "0.1.0"
 
