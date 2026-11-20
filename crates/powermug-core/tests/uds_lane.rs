@@ -45,6 +45,7 @@ fn setup() -> Setup {
         vec![
             point("S3/TM_001", EventClass::A),
             point("S3/TM_002", EventClass::B),
+            point("S3/CLASS_C", EventClass::C),
         ],
     )
     .expect("distinct");
@@ -332,6 +333,41 @@ async fn lost_session_is_journaled_and_degrades_the_image_until_restored() {
             Some(powermug_pivot::Quality::new(
                 powermug_pivot::Validity::Invalid
             ))
+        );
+    });
+    setup.shutdown().await;
+}
+
+#[tokio::test]
+async fn class_c_batch_is_acknowledged_received_not_durable() {
+    // Class C skips the journal (§7.1): it must never be acknowledged DURABLE.
+    let setup = setup();
+    let channel = client::connect(&setup.socket).await.expect("connects");
+    client::describe_capabilities(channel.clone(), capabilities())
+        .await
+        .expect("accepted");
+
+    let acks = client::stream_events(
+        channel,
+        vec![batch(1, vec![envelope("S3/CLASS_C", 1, int(3))])],
+        64,
+    )
+    .await
+    .expect("streamed");
+
+    let statuses: Vec<i32> = acks.iter().map(|a| a.status).collect();
+    assert_eq!(
+        statuses,
+        vec![
+            pb::AckStatus::Received as i32,
+            pb::AckStatus::Received as i32
+        ]
+    );
+    read(&setup.lane, |lane| {
+        assert_eq!(lane.log().last_seq().expect("last"), None);
+        assert_eq!(
+            lane.image().get(PointIndex(2)).map(|s| s.value),
+            Some(Value::Int(3))
         );
     });
     setup.shutdown().await;

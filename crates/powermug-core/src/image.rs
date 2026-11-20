@@ -43,6 +43,27 @@ impl ProcessImage {
         self.slots.get(point.0 as usize).and_then(Option::as_ref)
     }
 
+    /// Every slot that holds a value, with its point.
+    pub fn iter(&self) -> impl Iterator<Item = (PointIndex, &Slot)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(position, slot)| {
+                let index = PointIndex(u32::try_from(position).ok()?);
+                slot.as_ref().map(|slot| (index, slot))
+            })
+    }
+
+    /// Sets the slot of `point` from a snapshot. Only the lane restores.
+    pub(crate) fn restore(&mut self, point: PointIndex, slot: Slot) -> Result<(), OutOfRange> {
+        let target = self
+            .slots
+            .get_mut(point.0 as usize)
+            .ok_or(OutOfRange(point.0))?;
+        *target = Some(slot);
+        Ok(())
+    }
+
     /// Marks every value as invalid: after a restart, nothing is valid until a
     /// South resynchronization (PM-TEL-003). The values are kept.
     pub(crate) fn degrade_all(&mut self) {

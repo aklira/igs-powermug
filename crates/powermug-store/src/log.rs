@@ -7,6 +7,8 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Transaction};
+
+use crate::journal::OwnedEvent;
 use thiserror::Error;
 
 /// Class of an event (SPECIFICATIONS §7.5, [GW] §10.4).
@@ -67,6 +69,14 @@ pub struct StoredEvent {
     pub payload: Vec<u8>,
 }
 
+/// A stored snapshot of an image: the journal sequence it was taken at, and its
+/// encoded content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub seq: i64,
+    pub payload: Vec<u8>,
+}
+
 /// Proof that a batch is committed: its sequence numbers, inclusive.
 ///
 /// The image may only be updated from a committed batch (PM-TEL-001), and the
@@ -88,9 +98,19 @@ pub enum StoreError {
     UnknownClass(i64),
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error("the transaction could not be committed: {0}")]
+    CommitFailed(String),
+    #[error("the writer has stopped")]
+    WriterStopped,
 }
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS snapshots (
+    id          INTEGER PRIMARY KEY,
+    partition   TEXT    NOT NULL,
+    seq         INTEGER NOT NULL,
+    payload     BLOB    NOT NULL
+);
 CREATE TABLE IF NOT EXISTS events (
     seq         INTEGER PRIMARY KEY,
     partition   TEXT    NOT NULL,
@@ -189,6 +209,79 @@ impl TelemetryLog {
         Ok(events)
     }
 
+    /// Commits several batches in one transaction. Each batch is atomic on its
+    /// own: a batch that is refused is rolled back to its savepoint and the others
+    /// are still committed. Returns one result per batch, in order.
+    ///
+    /// If the transaction itself cannot be committed, every batch fails with
+    /// [`StoreError::CommitFailed`].
+    pub fn append_groups(
+        &mut self,
+        groups: &[Vec<OwnedEvent>],
+    ) -> Vec<Result<Option<Committed>, StoreError>> {
+        let mut tx = match self.conn.transaction() {
+            Ok(tx) => tx,
+            Err(err) => {
+                return groups
+                    .iter()
+                    .map(|_| Err(StoreError::CommitFailed(err.to_string())))
+                    .collect()
+            }
+        };
+        let mut results = Vec::with_capacity(groups.len());
+        for group in groups {
+            results.push(append_group(&mut tx, group));
+        }
+        match tx.commit() {
+            Ok(()) => results,
+            Err(err) => groups
+                .iter()
+                .map(|_| Err(StoreError::CommitFailed(err.to_string())))
+                .collect(),
+        }
+    }
+
+    /// Stores a snapshot of the image of `partition`, taken at journal sequence
+    /// `seq`. The newest snapshot of a partition is the one that counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Database`] when the row cannot be written.
+    pub fn put_snapshot(
+        &mut self,
+        partition: &str,
+        seq: i64,
+        payload: &[u8],
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO snapshots (partition, seq, payload) VALUES (?1, ?2, ?3)",
+            params![partition, seq, payload],
+        )?;
+        Ok(())
+    }
+
+    /// The newest snapshot of `partition`, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Database`] when the read fails.
+    pub fn latest_snapshot(&self, partition: &str) -> Result<Option<Snapshot>, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT seq, payload FROM snapshots WHERE partition = ?1 ORDER BY id DESC LIMIT 1",
+                params![partition],
+                |row| {
+                    Ok(Snapshot {
+                        seq: row.get(0)?,
+                        payload: row.get(1)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     /// The highest sequence number in the log, if any.
     ///
     /// # Errors
@@ -206,8 +299,8 @@ impl TelemetryLog {
     }
 }
 
-fn insert_all(tx: &Transaction<'_>, batch: &[NewEvent<'_>]) -> Result<Committed, StoreError> {
-    let mut statement = tx.prepare_cached(
+fn insert_all(conn: &Connection, batch: &[NewEvent<'_>]) -> Result<Committed, StoreError> {
+    let mut statement = conn.prepare_cached(
         "INSERT INTO events (partition, point, class, event_id, revision, ts_receive, payload)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
@@ -225,7 +318,7 @@ fn insert_all(tx: &Transaction<'_>, batch: &[NewEvent<'_>]) -> Result<Committed,
         ]);
         match inserted {
             Ok(_) => {
-                let seq = tx.last_insert_rowid();
+                let seq = conn.last_insert_rowid();
                 first_seq.get_or_insert(seq);
                 last_seq = seq;
             }
@@ -241,4 +334,22 @@ fn insert_all(tx: &Transaction<'_>, batch: &[NewEvent<'_>]) -> Result<Committed,
         first_seq: first_seq.unwrap_or(last_seq),
         last_seq,
     })
+}
+
+/// One batch inside a shared transaction, under its own savepoint.
+fn append_group(
+    tx: &mut Transaction<'_>,
+    group: &[OwnedEvent],
+) -> Result<Option<Committed>, StoreError> {
+    if group.iter().any(|e| e.class == EventClass::C) {
+        return Err(StoreError::ClassNotJournaled);
+    }
+    if group.is_empty() {
+        return Ok(None);
+    }
+    let savepoint = tx.savepoint()?;
+    let borrowed: Vec<NewEvent<'_>> = group.iter().map(OwnedEvent::as_new).collect();
+    let committed = insert_all(&savepoint, &borrowed)?;
+    savepoint.commit()?;
+    Ok(Some(committed))
 }

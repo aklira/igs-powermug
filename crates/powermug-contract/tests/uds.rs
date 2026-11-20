@@ -11,7 +11,7 @@ use powermug_contract::peer::ExpectedPeer;
 use powermug_contract::proto::v1 as pb;
 use powermug_contract::server::serve_instance;
 use powermug_contract::service::CoreConfig;
-use powermug_contract::sink::{BatchSink, Refusal};
+use powermug_contract::sink::{BatchSink, Durability, Refusal};
 use powermug_pivot::proto::v1::CommunicationState;
 use powermug_pivot::proto::v1::Envelope;
 use tokio::net::UnixListener;
@@ -61,8 +61,8 @@ impl Core {
 struct AcceptAll;
 
 impl BatchSink for AcceptAll {
-    fn commit(&mut self, _batch: &pb::EventBatch) -> Result<(), Refusal> {
-        Ok(())
+    fn commit(&mut self, _batch: &pb::EventBatch) -> Result<Durability, Refusal> {
+        Ok(Durability::Durable)
     }
 
     fn communication(&mut self, _state: &CommunicationState) -> Result<(), Refusal> {
@@ -74,7 +74,7 @@ impl BatchSink for AcceptAll {
 struct RefuseAll;
 
 impl BatchSink for RefuseAll {
-    fn commit(&mut self, _batch: &pb::EventBatch) -> Result<(), Refusal> {
+    fn commit(&mut self, _batch: &pb::EventBatch) -> Result<Durability, Refusal> {
         Err(Refusal::new("refused by test"))
     }
 

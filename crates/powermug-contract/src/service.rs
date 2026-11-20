@@ -24,7 +24,7 @@ use crate::proto::v1::{
     adapter_control_server::AdapterControl, adapter_data_server::AdapterData, AckBatch, AckStatus,
     Capabilities, CommunicationAck, EventBatch, HandshakeResponse,
 };
-use crate::sink::{BatchSink, Refusal};
+use crate::sink::{BatchSink, Durability, Refusal};
 use powermug_pivot::proto::v1::CommunicationState;
 
 /// What the core requires of the instance it spawned.
@@ -141,7 +141,7 @@ fn ack(batch_sequence: u64, status: AckStatus, credits_granted: u32, reason: &st
     }
 }
 
-fn commit(sink: &Mutex<Box<dyn BatchSink>>, batch: &EventBatch) -> Result<(), Refusal> {
+fn commit(sink: &Mutex<Box<dyn BatchSink>>, batch: &EventBatch) -> Result<Durability, Refusal> {
     let mut sink = sink.lock().unwrap_or_else(PoisonError::into_inner);
     sink.commit(batch)
 }
@@ -223,7 +223,8 @@ impl AdapterData for CoreService {
                     return;
                 }
                 let reply = match commit(&sink, &batch) {
-                    Ok(()) => ack(sequence, AckStatus::Durable, events, ""),
+                    Ok(Durability::Durable) => ack(sequence, AckStatus::Durable, events, ""),
+                    Ok(Durability::NotJournaled) => ack(sequence, AckStatus::Received, events, ""),
                     Err(refusal) => ack(sequence, AckStatus::Rejected, events, &refusal.reason),
                 };
                 // The batch is no longer in flight: its credits return now.

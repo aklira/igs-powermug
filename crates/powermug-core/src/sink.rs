@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use powermug_contract::proto::v1::EventBatch;
-use powermug_contract::sink::{BatchSink, Refusal};
+use powermug_contract::sink::{BatchSink, Durability, Refusal};
 use powermug_pivot::proto::v1::CommunicationState;
 
 use crate::clock::Clock;
@@ -28,14 +28,18 @@ impl LaneSink {
 }
 
 impl BatchSink for LaneSink {
-    fn commit(&mut self, batch: &EventBatch) -> Result<(), Refusal> {
+    fn commit(&mut self, batch: &EventBatch) -> Result<Durability, Refusal> {
         let times = self.clock.now();
         let mut lane = self.lane.lock().unwrap_or_else(PoisonError::into_inner);
         let events = batch_events(batch, lane.table(), times.wall_ns)
             .map_err(|err| Refusal::new(err.to_string()))?;
-        lane.ingest(&events, times)
-            .map(|_| ())
-            .map_err(|err| Refusal::new(err.to_string()))
+        let committed = lane
+            .ingest(&events, times)
+            .map_err(|err| Refusal::new(err.to_string()))?;
+        Ok(match committed {
+            Some(_) => Durability::Durable,
+            None => Durability::NotJournaled,
+        })
     }
 
     fn communication(&mut self, state: &CommunicationState) -> Result<(), Refusal> {

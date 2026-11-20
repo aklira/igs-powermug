@@ -6,6 +6,8 @@
 
 pub mod convert;
 pub mod mapping;
+pub mod run;
 
 pub use convert::{asdu as convert_asdu, Context, ConvertError, Converted, Unmapped};
 pub use mapping::{DuplicateObject, Mapping};
+pub use run::{capabilities, run, Options, Report};

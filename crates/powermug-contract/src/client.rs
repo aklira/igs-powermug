@@ -146,3 +146,90 @@ async fn send_within_window(
     }
     Ok(())
 }
+
+/// An open `StreamEvents` call, fed batch by batch. The adapter sends a batch
+/// when the window allows it, and reads the acknowledgements as they come.
+#[derive(Debug)]
+pub struct EventStream {
+    batches: mpsc::Sender<EventBatch>,
+    credits: mpsc::UnboundedReceiver<u32>,
+    acks: mpsc::UnboundedReceiver<AckBatch>,
+    available: CreditWindow,
+    window: u32,
+    reader: tokio::task::JoinHandle<Result<(), Status>>,
+}
+
+impl EventStream {
+    /// Opens the stream with a window of `window` events.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::Status`] when the core refuses the stream, for
+    /// example before the handshake.
+    pub async fn open(channel: Channel, window: u32) -> Result<Self, ClientError> {
+        let (batches, rx) = mpsc::channel::<EventBatch>(1);
+        let response = AdapterDataClient::new(channel)
+            .stream_events(ReceiverStream::new(rx))
+            .await?;
+        let mut inbound = response.into_inner();
+        let (credit_tx, credits) = mpsc::unbounded_channel::<u32>();
+        let (ack_tx, acks) = mpsc::unbounded_channel::<AckBatch>();
+        let reader = tokio::spawn(async move {
+            while let Some(ack) = inbound.message().await? {
+                let _ = credit_tx.send(ack.credits_granted);
+                let _ = ack_tx.send(ack);
+            }
+            Ok::<_, Status>(())
+        });
+        let mut available = CreditWindow::new(window);
+        available.grant(window)?;
+        Ok(Self {
+            batches,
+            credits,
+            acks,
+            available,
+            window,
+            reader,
+        })
+    }
+
+    /// Sends a batch, waiting for the credits it needs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::BatchExceedsWindow`] for a batch larger than the
+    /// window, and [`ClientError::StreamClosed`] when the core ends the stream.
+    pub async fn send(&mut self, batch: EventBatch) -> Result<(), ClientError> {
+        let events = u32::try_from(batch.events.len()).unwrap_or(u32::MAX);
+        if events > self.window {
+            return Err(ClientError::BatchExceedsWindow {
+                events,
+                window: self.window,
+            });
+        }
+        while self.available.consume(events).is_err() {
+            let returned = self.credits.recv().await.ok_or(ClientError::StreamClosed)?;
+            self.available.grant(returned)?;
+        }
+        self.batches
+            .send(batch)
+            .await
+            .map_err(|_| ClientError::StreamClosed)
+    }
+
+    /// The next acknowledgement, or `None` when the stream has ended.
+    pub async fn next_ack(&mut self) -> Option<AckBatch> {
+        self.acks.recv().await
+    }
+
+    /// Ends the stream and returns the status the core ended it with, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::Status`] when the core ended the stream with an error.
+    pub async fn finish(self) -> Result<(), ClientError> {
+        drop(self.batches);
+        self.reader.await.map_err(|_| ClientError::StreamClosed)??;
+        Ok(())
+    }
+}

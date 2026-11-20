@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use powermug_pivot::proto::v1 as pb;
 use powermug_pivot::{Detail, EventId, PointEvent, PointIndex, Quality, Validity};
-use powermug_store::{Committed, EventClass, NewEvent, StoreError, TelemetryLog};
+use powermug_store::{Committed, EventClass, Journal, NewEvent, StoreError};
 use prost::Message;
 use thiserror::Error;
 use uuid::Uuid;
@@ -54,29 +54,50 @@ pub struct PointTable {
     by_id: HashMap<String, PointIndex>,
 }
 
-/// Two points of one table share an identifier.
+/// A point table that cannot be built.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-#[error("point id {0} appears twice in the table")]
-pub struct DuplicatePointId(pub String);
+pub enum TableError {
+    #[error("point id {0} appears twice in the table")]
+    DuplicatePointId(String),
+    #[error("a lane holds one partition: point {point_id} is on site {site} instead of {first}")]
+    MixedSites {
+        first: String,
+        site: String,
+        point_id: String,
+    },
+}
 
 impl PointTable {
     /// Builds the table of partition revision `revision_index`.
     ///
     /// # Errors
     ///
-    /// Returns [`DuplicatePointId`] when two points share an identifier.
+    /// Returns [`TableError::DuplicatePointId`] when two points share an
+    /// identifier, and [`TableError::MixedSites`] when the points are not all on
+    /// the same site: a lane is one partition (§7.1).
     ///
     /// # Panics
     ///
     /// Panics when the table holds 2^32 points or more, which no partition does.
-    pub fn new(revision_index: u32, specs: Vec<PointSpec>) -> Result<Self, DuplicatePointId> {
+    pub fn new(revision_index: u32, specs: Vec<PointSpec>) -> Result<Self, TableError> {
+        if let Some(first) = specs.first() {
+            for spec in &specs {
+                if spec.site_id != first.site_id {
+                    return Err(TableError::MixedSites {
+                        first: first.site_id.clone(),
+                        site: spec.site_id.clone(),
+                        point_id: spec.point_id.clone(),
+                    });
+                }
+            }
+        }
         let mut by_id = HashMap::with_capacity(specs.len());
         for (position, spec) in specs.iter().enumerate() {
             let index = PointIndex(
                 u32::try_from(position).expect("a point table holds fewer than 2^32 points"),
             );
             if by_id.insert(spec.point_id.clone(), index).is_some() {
-                return Err(DuplicatePointId(spec.point_id.clone()));
+                return Err(TableError::DuplicatePointId(spec.point_id.clone()));
             }
         }
         Ok(Self {
@@ -84,6 +105,12 @@ impl PointTable {
             specs,
             by_id,
         })
+    }
+
+    /// The site of the partition: the site of its points, or empty for an empty table.
+    #[must_use]
+    pub fn site_id(&self) -> &str {
+        self.specs.first().map_or("", |spec| spec.site_id.as_str())
     }
 
     /// The partition revision that mapped these points.
@@ -135,6 +162,8 @@ pub enum LaneError {
     UnknownPoint(u32),
     #[error("no point of the table is attached to session {0}")]
     UnknownSession(u32),
+    #[error("the snapshot cannot be restored: {0}")]
+    Snapshot(String),
     #[error("journal record {seq} cannot be replayed: {reason}")]
     Replay { seq: i64, reason: String },
     #[error("point index {0} was reported stale but has no value in the image")]
@@ -186,15 +215,19 @@ struct Encoded {
 pub struct Lane {
     table: PointTable,
     image: ProcessImage,
-    log: TelemetryLog,
+    log: Box<dyn Journal>,
     supervisor: CycleSupervisor,
     lost: HashSet<SessionId>,
+    last_snapshot_ns: u64,
 }
+
+/// How often a lane takes a snapshot of its image (§7.2, H).
+pub const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl Lane {
     /// A lane over `table` and `log`, whose monotonic clock reads `now_ns`.
     #[must_use]
-    pub fn new(table: PointTable, log: TelemetryLog, now_ns: u64) -> Self {
+    pub fn new(table: PointTable, log: impl Journal + 'static, now_ns: u64) -> Self {
         let image = ProcessImage::with_points(table.len());
         let mut supervisor = CycleSupervisor::new(table.len(), now_ns);
         for (index, spec) in table.iter() {
@@ -206,13 +239,45 @@ impl Lane {
         Self {
             table,
             image,
-            log,
+            log: Box::new(log),
             supervisor,
             lost: HashSet::new(),
+            last_snapshot_ns: now_ns,
         }
     }
 
-    /// Opens a lane over `log`, rebuilding the image from the journal.
+    /// Takes a snapshot of the image at the current journal sequence. Returns
+    /// the sequence, or `None` when the journal is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LaneError::Store`] when the snapshot cannot be written.
+    pub fn snapshot(&mut self) -> Result<Option<i64>, LaneError> {
+        let Some(seq) = self.log.last_seq()? else {
+            return Ok(None);
+        };
+        let payload = crate::snapshot::encode(&self.image);
+        self.log.put_snapshot(self.table.site_id(), seq, &payload)?;
+        Ok(Some(seq))
+    }
+
+    /// Takes a snapshot when [`SNAPSHOT_INTERVAL`] has passed since the last one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Lane::snapshot`].
+    pub fn snapshot_if_due(&mut self, times: Times) -> Result<bool, LaneError> {
+        let interval = u64::try_from(SNAPSHOT_INTERVAL.as_nanos()).unwrap_or(u64::MAX);
+        if times.monotonic_ns.saturating_sub(self.last_snapshot_ns) < interval {
+            return Ok(false);
+        }
+        self.snapshot()?;
+        self.last_snapshot_ns = times.monotonic_ns;
+        Ok(true)
+    }
+
+    /// Opens a lane over `log`, rebuilding the image from the newest snapshot
+    /// and the journal written after it.
     ///
     /// Every replayed point is then degraded and suspended: nothing is valid
     /// until a South resynchronization gives a fresh value (PM-TEL-003,
@@ -224,9 +289,19 @@ impl Lane {
     /// Returns [`LaneError::Replay`] for a journal record that does not decode
     /// against the table, and [`LaneError::Store`] when the journal cannot be
     /// read.
-    pub fn open(table: PointTable, log: TelemetryLog, now_ns: u64) -> Result<Self, LaneError> {
+    pub fn open(
+        table: PointTable,
+        log: impl Journal + 'static,
+        now_ns: u64,
+    ) -> Result<Self, LaneError> {
         let mut lane = Self::new(table, log, now_ns);
-        lane.replay()?;
+        let mut next = 1;
+        if let Some(snapshot) = lane.log.latest_snapshot(lane.table.site_id())? {
+            crate::snapshot::restore(&snapshot.payload, &mut lane.image)
+                .map_err(LaneError::Snapshot)?;
+            next = snapshot.seq + 1;
+        }
+        lane.replay(next)?;
         lane.image.degrade_all();
         let suspended: Vec<PointIndex> = lane
             .table
@@ -241,9 +316,8 @@ impl Lane {
     }
 
     /// Applies every journaled point event, in sequence order.
-    fn replay(&mut self) -> Result<(), LaneError> {
+    fn replay(&mut self, mut next: i64) -> Result<(), LaneError> {
         const PAGE: u32 = 1_000;
-        let mut next = 1;
         loop {
             let rows = self.log.read_from(next, PAGE)?;
             for row in &rows {
@@ -291,8 +365,8 @@ impl Lane {
     }
 
     #[must_use]
-    pub fn log(&self) -> &TelemetryLog {
-        &self.log
+    pub fn log(&self) -> &dyn Journal {
+        self.log.as_ref()
     }
 
     /// The cycle state of `point`, for tests and diagnostics.
