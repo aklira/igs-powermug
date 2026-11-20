@@ -17,6 +17,7 @@ powermug-pivot = { path = "../powermug-pivot" }
 powermug-store = { path = "../powermug-store" }
 prost = "0.14"
 thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
 uuid = { version = "1.29", features = ["v7", "rng"] }
 
 [dev-dependencies]

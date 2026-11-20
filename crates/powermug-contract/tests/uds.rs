@@ -68,6 +68,15 @@ impl BatchSink for AcceptAll {
     fn communication(&mut self, _state: &CommunicationState) -> Result<(), Refusal> {
         Ok(())
     }
+
+    fn snapshot(&mut self, _session_id: &str) -> Result<Vec<Envelope>, Refusal> {
+        Ok(Vec::new())
+    }
+
+    fn subscribe(&mut self) -> tokio::sync::broadcast::Receiver<Envelope> {
+        let (_tx, rx) = tokio::sync::broadcast::channel(1);
+        rx
+    }
 }
 
 /// Refuses every batch.
@@ -80,6 +89,15 @@ impl BatchSink for RefuseAll {
 
     fn communication(&mut self, _state: &CommunicationState) -> Result<(), Refusal> {
         Err(Refusal::new("refused by test"))
+    }
+
+    fn snapshot(&mut self, _session_id: &str) -> Result<Vec<Envelope>, Refusal> {
+        Err(Refusal::new("refused by test"))
+    }
+
+    fn subscribe(&mut self) -> tokio::sync::broadcast::Receiver<Envelope> {
+        let (_tx, rx) = tokio::sync::broadcast::channel(1);
+        rx
     }
 }
 

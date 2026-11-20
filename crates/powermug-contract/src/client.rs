@@ -18,7 +18,8 @@ use tower::service_fn;
 use crate::credit::{CreditError, CreditWindow};
 use crate::proto::v1::{
     adapter_control_client::AdapterControlClient, adapter_data_client::AdapterDataClient, AckBatch,
-    Capabilities, CommunicationAck, EventBatch, HandshakeResponse,
+    Capabilities, CommunicationAck, EventBatch, HandshakeResponse, InterrogateRequest,
+    SubscribeRequest,
 };
 use powermug_pivot::proto::v1::CommunicationState;
 
@@ -232,4 +233,41 @@ impl EventStream {
         self.reader.await.map_err(|_| ClientError::StreamClosed)??;
         Ok(())
     }
+}
+
+/// The state of the points of a session, from the core.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Status`] when the core refuses the request.
+pub async fn interrogate_state(
+    channel: Channel,
+    session_id: &str,
+) -> Result<Vec<powermug_pivot::proto::v1::Envelope>, ClientError> {
+    let mut stream = AdapterDataClient::new(channel)
+        .interrogate_state(InterrogateRequest {
+            session_id: session_id.to_owned(),
+        })
+        .await?
+        .into_inner();
+    let mut envelopes = Vec::new();
+    while let Some(envelope) = stream.message().await? {
+        envelopes.push(envelope);
+    }
+    Ok(envelopes)
+}
+
+/// Opens the stream of the events the core commits from now on.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Status`] when the core refuses the subscription.
+pub async fn subscribe_events(
+    channel: Channel,
+) -> Result<tonic::Streaming<powermug_pivot::proto::v1::Envelope>, ClientError> {
+    let stream = AdapterDataClient::new(channel)
+        .subscribe_events(SubscribeRequest {})
+        .await?
+        .into_inner();
+    Ok(stream)
 }

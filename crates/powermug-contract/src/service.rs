@@ -22,7 +22,8 @@ use crate::handshake::{self, Offer, API_VERSION};
 use crate::peer::{self, ExpectedPeer, PeerCredentials};
 use crate::proto::v1::{
     adapter_control_server::AdapterControl, adapter_data_server::AdapterData, AckBatch, AckStatus,
-    Capabilities, CommunicationAck, EventBatch, HandshakeResponse,
+    Capabilities, CommunicationAck, EventBatch, HandshakeResponse, InterrogateRequest,
+    SubscribeRequest,
 };
 use crate::sink::{BatchSink, Durability, Refusal};
 use powermug_pivot::proto::v1::CommunicationState;
@@ -149,6 +150,65 @@ fn commit(sink: &Mutex<Box<dyn BatchSink>>, batch: &EventBatch) -> Result<Durabi
 #[tonic::async_trait]
 impl AdapterData for CoreService {
     type StreamEventsStream = ReceiverStream<Result<AckBatch, Status>>;
+    type InterrogateStateStream =
+        tokio_stream::Iter<std::vec::IntoIter<Result<powermug_pivot::proto::v1::Envelope, Status>>>;
+    type SubscribeEventsStream =
+        ReceiverStream<Result<powermug_pivot::proto::v1::Envelope, Status>>;
+
+    async fn interrogate_state(
+        &self,
+        request: Request<InterrogateRequest>,
+    ) -> Result<Response<Self::InterrogateStateStream>, Status> {
+        authenticate(&request, self.config.expected_peer)?;
+        self.accepted().ok_or_else(|| {
+            Status::failed_precondition("no accepted handshake for this instance")
+        })?;
+        let session = request.into_inner().session_id;
+        let envelopes = {
+            let mut sink = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
+            sink.snapshot(&session)
+                .map_err(|refusal| Status::invalid_argument(refusal.reason))?
+        };
+        let items: Vec<Result<_, Status>> = envelopes.into_iter().map(Ok).collect();
+        Ok(Response::new(tokio_stream::iter(items)))
+    }
+
+    async fn subscribe_events(
+        &self,
+        request: Request<SubscribeRequest>,
+    ) -> Result<Response<Self::SubscribeEventsStream>, Status> {
+        authenticate(&request, self.config.expected_peer)?;
+        self.accepted().ok_or_else(|| {
+            Status::failed_precondition("no accepted handshake for this instance")
+        })?;
+        let mut events = {
+            let mut sink = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
+            sink.subscribe()
+        };
+        let (tx, rx) = mpsc::channel(256);
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(envelope) => {
+                        if tx.send(Ok(envelope)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        // A lost event is reported, never skipped silently.
+                        let _ = tx
+                            .send(Err(Status::data_loss(format!(
+                                "the subscriber fell behind: {skipped} events were skipped"
+                            ))))
+                            .await;
+                        return;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
 
     async fn report_communication(
         &self,

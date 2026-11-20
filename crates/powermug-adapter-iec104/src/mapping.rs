@@ -19,6 +19,7 @@ pub struct DuplicateObject {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Mapping {
     points: HashMap<(u16, u32), String>,
+    objects: HashMap<String, (u16, u32)>,
 }
 
 impl Mapping {
@@ -31,7 +32,9 @@ impl Mapping {
         entries: impl IntoIterator<Item = (u16, u32, String)>,
     ) -> Result<Self, DuplicateObject> {
         let mut points = HashMap::new();
+        let mut objects = HashMap::new();
         for (common_address, address, point_id) in entries {
+            objects.insert(point_id.clone(), (common_address, address));
             if points.insert((common_address, address), point_id).is_some() {
                 return Err(DuplicateObject {
                     common_address,
@@ -39,7 +42,7 @@ impl Mapping {
                 });
             }
         }
-        Ok(Self { points })
+        Ok(Self { points, objects })
     }
 
     /// The point identifier of an object, if the object is mapped.
@@ -48,6 +51,12 @@ impl Mapping {
         self.points
             .get(&(common_address, address))
             .map(String::as_str)
+    }
+
+    /// The object that carries the point, as `(common address, object address)`.
+    #[must_use]
+    pub fn object_of(&self, point_id: &str) -> Option<(u16, u32)> {
+        self.objects.get(point_id).copied()
     }
 
     #[must_use]

@@ -219,6 +219,7 @@ pub struct Lane {
     supervisor: CycleSupervisor,
     lost: HashSet<SessionId>,
     last_snapshot_ns: u64,
+    published: Vec<pb::Envelope>,
 }
 
 /// How often a lane takes a snapshot of its image (§7.2, H).
@@ -243,6 +244,7 @@ impl Lane {
             supervisor,
             lost: HashSet::new(),
             last_snapshot_ns: now_ns,
+            published: Vec::new(),
         }
     }
 
@@ -428,6 +430,7 @@ impl Lane {
                 return Err(err);
             }
         };
+        self.publish(&entries);
 
         for entry in &entries {
             if let Journaled::Point { event, origin } = entry {
@@ -496,6 +499,7 @@ impl Lane {
         }
 
         let committed = self.append(&entries)?;
+        self.publish(&entries);
         for entry in &entries {
             if let Journaled::Point { event, .. } = entry {
                 self.image.apply(event)?;
@@ -539,6 +543,53 @@ impl Lane {
         let committed = self.append(&entries)?;
         self.lost.remove(&session);
         Ok(committed)
+    }
+
+    /// Takes the envelopes of the point events committed since the last call, in
+    /// commit order. The core publishes them to the North adapters.
+    pub fn take_published(&mut self) -> Vec<pb::Envelope> {
+        std::mem::take(&mut self.published)
+    }
+
+    /// The current state of the points of `session` that hold a value, as
+    /// envelopes. A general interrogation is answered from this.
+    #[must_use]
+    pub fn session_state(&self, session: SessionId) -> Vec<pb::Envelope> {
+        self.table
+            .iter()
+            .filter(|(_, spec)| spec.session == Some(session))
+            .filter_map(|(index, spec)| {
+                let slot = self.image.get(index)?;
+                Some(pb::Envelope {
+                    site_id: spec.site_id.clone(),
+                    point_id: spec.point_id.clone(),
+                    value: Some(slot.value.into()),
+                    quality: Some(slot.quality.into()),
+                    source_time_ns: slot.source_time_ns,
+                    receive_time_ns: slot.receive_time_ns,
+                    mapping_revision: slot.revision_index.to_string(),
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    /// Keeps the envelopes of the point items of a commit for publication.
+    fn publish(&mut self, entries: &[Journaled]) {
+        for entry in entries {
+            let Journaled::Point { event, origin } = entry else {
+                continue;
+            };
+            if let Some(spec) = self.table.get(event.point) {
+                self.published.push(envelope(
+                    event,
+                    &spec.site_id,
+                    &spec.point_id,
+                    *origin,
+                    self.table.revision_index(),
+                ));
+            }
+        }
     }
 
     /// The site of the points attached to `session`.

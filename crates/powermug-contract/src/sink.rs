@@ -5,7 +5,8 @@
 //! `DURABLE` only then.
 
 use crate::proto::v1::EventBatch;
-use powermug_pivot::proto::v1::CommunicationState;
+use powermug_pivot::proto::v1::{CommunicationState, Envelope};
+use tokio::sync::broadcast;
 
 /// What the core did with an accepted batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,4 +55,15 @@ pub trait BatchSink: Send {
     ///
     /// Returns a [`Refusal`] when the change cannot be committed.
     fn communication(&mut self, state: &CommunicationState) -> Result<(), Refusal>;
+
+    /// The current state of the points of `session_id` that hold a value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Refusal`] when the session is unknown to the core.
+    fn snapshot(&mut self, session_id: &str) -> Result<Vec<Envelope>, Refusal>;
+
+    /// A receiver of the events committed from now on. Events committed before
+    /// the call are not delivered to it.
+    fn subscribe(&mut self) -> broadcast::Receiver<Envelope>;
 }

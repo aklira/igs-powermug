@@ -136,4 +136,16 @@ service AdapterData {
   rpc StreamEvents(stream EventBatch) returns (stream AckBatch);
   // South: a session was lost or is back. The core answers once it is committed.
   rpc ReportCommunication(powermug.pivot.v1.CommunicationState) returns (CommunicationAck);
+  // North: the current state of the points of a session, for a general interrogation.
+  rpc InterrogateState(InterrogateRequest) returns (stream powermug.pivot.v1.Envelope);
+  // North: the events committed by the core, from now on, for every point of the cell.
+  rpc SubscribeEvents(SubscribeRequest) returns (stream powermug.pivot.v1.Envelope);
 }
+
+// Asks for the state of one session.
+message InterrogateRequest {
+  string session_id = 1;
+}
+
+// Asks for the events committed from now on.
+message SubscribeRequest {}
