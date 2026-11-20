@@ -14,7 +14,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::VerifyingKey;
 use powermug_revision::canonical::content_id;
-use powermug_revision::{parse_strict_json, validate_stage1, validate_stage2, verify_signed_plan};
+use powermug_revision::profile::powermug_v1;
+use powermug_revision::{
+    parse_strict_json, validate_stage1, validate_stage2, validate_stage3, verify_signed_plan,
+};
 use powermug_sandbox::{cgroup, features, profile, Profile};
 
 #[derive(Debug, Parser)]
@@ -166,6 +169,7 @@ fn revision_validate(file: &Path) -> Result<()> {
     // Stage 2 covers the partition revisions of the P2 subset (§10.3).
     if document.get("kind").and_then(serde_json::Value::as_str) == Some("PartitionRevision") {
         findings.extend(validate_stage2(&document));
+        findings.extend(validate_stage3(&document, &powermug_v1()));
         findings.sort();
     }
     let bytes = powermug_revision::canonical::canonical_bytes(&serde_json::to_value(&findings)?)?;

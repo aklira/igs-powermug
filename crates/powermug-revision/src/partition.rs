@@ -35,8 +35,17 @@ pub struct Metadata {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
+    pub requires: Requires,
     pub sessions: Vec<Session>,
     pub points: Vec<Point>,
+}
+
+/// What the revision needs from the target: the contract version and the capabilities.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Requires {
+    pub contract: String,
+    pub capabilities: Vec<String>,
 }
 
 /// A South session. Only the IEC 104 client adapter is in the P2 subset.
@@ -75,6 +84,71 @@ pub fn parse(document: &Value) -> Result<PartitionRevision, Finding> {
         pointer: String::new(),
         message: format!("the document is outside the P2 partition subset: {err}"),
     })
+}
+
+/// Stage 3 of the validation (§10.4) on the P2 subset: the revision requires only
+/// capabilities the profile declares (`PMV-CAP-001`), its contract version is the
+/// profile's major version (`PMV-CAP-003`), and its sessions and points stay within
+/// the profile's limits (`PMV-CAP-002`, FUN-SCA-003).
+#[must_use]
+pub fn validate_stage3(document: &Value, profile: &crate::profile::Profile) -> Vec<Finding> {
+    let revision = match parse(document) {
+        Ok(revision) => revision,
+        Err(finding) => return vec![finding],
+    };
+    let mut findings = Vec::new();
+    let mut push = |code: &'static str, pointer: &str, message: String| {
+        findings.push(Finding {
+            code,
+            pointer: pointer.to_owned(),
+            message,
+        });
+    };
+    for (index, capability) in revision.spec.requires.capabilities.iter().enumerate() {
+        if !profile.capabilities.contains_key(capability) {
+            push(
+                "PMV-CAP-001",
+                &format!("/spec/requires/capabilities/{index}"),
+                format!(
+                    "capability {capability} is not declared by {}",
+                    profile.name
+                ),
+            );
+        }
+    }
+    let major = |version: &str| version.split('.').next().unwrap_or_default().to_owned();
+    if major(&revision.spec.requires.contract) != major(&profile.contract_version) {
+        push(
+            "PMV-CAP-003",
+            "/spec/requires/contract",
+            format!(
+                "contract {} is not the major version of {} ({})",
+                revision.spec.requires.contract, profile.name, profile.contract_version
+            ),
+        );
+    }
+    let limits = &profile.limits;
+    let sessions = u64::try_from(revision.spec.sessions.len()).unwrap_or(u64::MAX);
+    if sessions > limits.max_sessions {
+        push(
+            "PMV-CAP-002",
+            "/spec/sessions",
+            format!(
+                "{sessions} sessions exceed the limit of {}",
+                limits.max_sessions
+            ),
+        );
+    }
+    let points = u64::try_from(revision.spec.points.len()).unwrap_or(u64::MAX);
+    if points > limits.max_points {
+        push(
+            "PMV-CAP-002",
+            "/spec/points",
+            format!("{points} points exceed the limit of {}", limits.max_points),
+        );
+    }
+    findings.sort();
+    findings
 }
 
 /// Stage 2 of the validation on the P2 subset: unique identifiers and addresses,
@@ -192,6 +266,7 @@ mod tests {
             "kind": "PartitionRevision",
             "metadata": { "cell": "CELL_DC1", "site": "S3" },
             "spec": {
+                "requires": { "contract": "1.0", "capabilities": ["south.iec104"] },
                 "sessions": [ { "id": "s3-rtu1", "adapter": "iec104-client", "common_address": 3 } ],
                 "points": [
                     { "id": "S3/TM_001", "session": "s3-rtu1", "address": 1, "class": "A" },
@@ -257,6 +332,46 @@ mod tests {
         let mut doc = document();
         doc["spec"]["sessions"][0]["common_address"] = json!(0);
         assert_eq!(codes(&validate_stage2(&doc)), vec!["PMV-SEM-007"]);
+    }
+
+    fn small_profile() -> crate::profile::Profile {
+        let mut profile = crate::profile::powermug_v1();
+        profile.limits.max_points = 1;
+        profile
+    }
+
+    #[test]
+    fn a_consistent_document_passes_stage_three() {
+        assert_eq!(
+            validate_stage3(&document(), &crate::profile::powermug_v1()),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn an_undeclared_capability_is_found() {
+        let mut doc = document();
+        doc["spec"]["requires"]["capabilities"] = json!(["south.modbus_tcp"]);
+        let findings = validate_stage3(&doc, &crate::profile::powermug_v1());
+        assert_eq!(codes_of(&findings), vec!["PMV-CAP-001"]);
+    }
+
+    #[test]
+    fn a_contract_of_another_major_version_is_found() {
+        let mut doc = document();
+        doc["spec"]["requires"]["contract"] = json!("2.0");
+        let findings = validate_stage3(&doc, &crate::profile::powermug_v1());
+        assert_eq!(codes_of(&findings), vec!["PMV-CAP-003"]);
+    }
+
+    #[test]
+    fn points_above_the_profile_limit_are_found() {
+        let findings = validate_stage3(&document(), &small_profile());
+        assert_eq!(codes_of(&findings), vec!["PMV-CAP-002"]);
+    }
+
+    fn codes_of(findings: &[Finding]) -> Vec<&'static str> {
+        findings.iter().map(|f| f.code).collect()
     }
 
     #[test]
