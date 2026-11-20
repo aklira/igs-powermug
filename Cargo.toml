@@ -8,6 +8,7 @@ members = [
     "crates/powermug-pivot",
     "crates/powermug-contract",
     "crates/powermug-store",
+    "crates/powermug-adapter-iec104",
 ]
 
 [workspace.package]

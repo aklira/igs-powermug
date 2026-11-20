@@ -892,6 +892,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "igs-iec104-codec"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4e53d6dfc33bd6defed0eed967969274280034192d96bdd5db7d45917d0d4e1"
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1329,6 +1335,15 @@ dependencies = [
  "powermug-revision",
  "powermug-sandbox",
  "serde_json",
+]
+
+[[package]]
+name = "powermug-adapter-iec104"
+version = "0.1.0"
+dependencies = [
+ "igs-iec104-codec",
+ "powermug-pivot",
+ "thiserror",
 ]
 
 [[package]]
@@ -1920,7 +1935,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys",

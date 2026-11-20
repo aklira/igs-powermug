@@ -1,0 +1,17 @@
+[package]
+name = "powermug-adapter-iec104"
+description = "IEC 60870-5-104 South adapter of Powermug: maps ASDUs of igs-iec104 to pivot envelopes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+igs-iec104-codec = "0.1.0"
+powermug-pivot = { path = "../powermug-pivot" }
+thiserror = "2"

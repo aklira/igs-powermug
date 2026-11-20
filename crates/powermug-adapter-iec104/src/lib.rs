@@ -1,0 +1,11 @@
+//! IEC 60870-5-104 South adapter of Powermug (SPECIFICATIONS §6, §7.1).
+//!
+//! This crate converts the ASDUs of a controlled station, as decoded by
+//! `igs-iec104`, into pivot envelopes of `powermug.pivot.v1`. The connection,
+//! the general interrogation and the transport to the core are not written yet.
+
+pub mod convert;
+pub mod mapping;
+
+pub use convert::{asdu as convert_asdu, Context, ConvertError, Converted, Unmapped};
+pub use mapping::{DuplicateObject, Mapping};
