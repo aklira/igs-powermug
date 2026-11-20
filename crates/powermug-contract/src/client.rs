@@ -19,7 +19,7 @@ use crate::credit::{CreditError, CreditWindow};
 use crate::proto::v1::{
     adapter_control_client::AdapterControlClient, adapter_data_client::AdapterDataClient, AckBatch,
     Capabilities, CommunicationAck, DeliveryAck, DeliveryBatch, EventBatch, HandshakeResponse,
-    InterrogateRequest,
+    HealthAck, HealthReport, InterrogateRequest,
 };
 use powermug_pivot::proto::v1::CommunicationState;
 
@@ -66,6 +66,21 @@ pub async fn describe_capabilities(
 ) -> Result<HandshakeResponse, ClientError> {
     let response = AdapterControlClient::new(channel)
         .describe_capabilities(capabilities)
+        .await?;
+    Ok(response.into_inner())
+}
+
+/// Sends one health report (§6.3). Returns once the core has counted it.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Status`] when the core refuses the report.
+pub async fn report_health(
+    channel: Channel,
+    report: HealthReport,
+) -> Result<HealthAck, ClientError> {
+    let response = AdapterControlClient::new(channel)
+        .report_health(report)
         .await?;
     Ok(response.into_inner())
 }

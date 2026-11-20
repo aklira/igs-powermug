@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::server::UdsConnectInfo;
 use tonic::{Request, Response, Status, Streaming};
@@ -24,7 +24,7 @@ use crate::peer::{self, ExpectedPeer, PeerCredentials};
 use crate::proto::v1::{
     adapter_control_server::AdapterControl, adapter_data_server::AdapterData, AckBatch, AckStatus,
     Capabilities, CommunicationAck, DeliveryAck, DeliveryBatch, EventBatch, HandshakeResponse,
-    InterrogateRequest,
+    HealthAck, HealthReport, InterrogateRequest,
 };
 use crate::sink::{BatchSink, Durability, Refusal};
 use powermug_pivot::proto::v1::CommunicationState;
@@ -57,6 +57,8 @@ pub struct CoreService {
     config: Arc<CoreConfig>,
     accepted: Arc<Mutex<Option<Accepted>>>,
     sink: Arc<Mutex<Box<dyn BatchSink>>>,
+    /// Notified on every accepted health report, if the owner watches them.
+    heartbeat: Option<Arc<Notify>>,
 }
 
 impl CoreService {
@@ -66,7 +68,15 @@ impl CoreService {
             config: Arc::new(config),
             accepted: Arc::new(Mutex::new(None)),
             sink: Arc::new(Mutex::new(sink)),
+            heartbeat: None,
         }
+    }
+
+    /// Notifies `heartbeat` on every health report of the instance (§6.3).
+    #[must_use]
+    pub fn with_heartbeat(mut self, heartbeat: Arc<Notify>) -> Self {
+        self.heartbeat = Some(heartbeat);
+        self
     }
 
     fn accepted(&self) -> Option<Accepted> {
@@ -136,6 +146,20 @@ impl AdapterControl for CoreService {
                 self.config.offer.pivot.minor,
             )),
         }))
+    }
+
+    async fn report_health(
+        &self,
+        request: Request<HealthReport>,
+    ) -> Result<Response<HealthAck>, Status> {
+        authenticate(&request, self.config.expected_peer)?;
+        self.accepted().ok_or_else(|| {
+            Status::failed_precondition("no accepted handshake for this instance")
+        })?;
+        if let Some(heartbeat) = &self.heartbeat {
+            heartbeat.notify_one();
+        }
+        Ok(Response::new(HealthAck {}))
     }
 }
 

@@ -422,3 +422,118 @@ async fn an_instance_runs_in_its_cgroup_under_its_limits() {
         "memory.max, memory.swap.max, pids.max, cpu.max"
     );
 }
+
+#[tokio::test]
+async fn a_healthy_instance_keeps_running_past_the_health_window() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let station = start_station().await;
+    let config = configuration(dir.path(), station.addr, BIN);
+    let lane = lane_of(&config, dir.path());
+    let instance = instances(&config).expect("instances").remove(0);
+
+    let (stop, stopped) = watch::channel(false);
+    let supervisor = tokio::spawn(supervise(
+        instance,
+        Arc::clone(&lane),
+        Policy::default(),
+        stopped,
+    ));
+    let watched = Arc::clone(&lane);
+    let fed = wait_until(
+        || {
+            watched
+                .lock()
+                .expect("lock")
+                .image()
+                .get(PointIndex(0))
+                .is_some()
+        },
+        30,
+    )
+    .await;
+    let first = adapter_pids(dir.path());
+
+    // Well past the three-second window: the reports keep the instance alive.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let later = adapter_pids(dir.path());
+    let lost = lane.lock().expect("lock").is_lost(SessionId(1));
+
+    let _ = stop.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(15), supervisor).await;
+    let _ = station.stop.send(());
+    let _ = station.task.await;
+
+    assert!(fed, "the lane did not receive a value");
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first, later, "the healthy instance was restarted");
+    assert!(!lost, "the session was lost while the instance was healthy");
+}
+
+#[tokio::test]
+async fn a_silent_instance_is_killed_and_restarted() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let station = start_station().await;
+    let config = configuration(dir.path(), station.addr, BIN);
+    let lane = lane_of(&config, dir.path());
+    let instance = instances(&config).expect("instances").remove(0);
+
+    let (stop, stopped) = watch::channel(false);
+    let supervisor = tokio::spawn(supervise(
+        instance,
+        Arc::clone(&lane),
+        Policy::default(),
+        stopped,
+    ));
+    let watched = Arc::clone(&lane);
+    let fed = wait_until(
+        || {
+            watched
+                .lock()
+                .expect("lock")
+                .image()
+                .get(PointIndex(0))
+                .is_some()
+        },
+        30,
+    )
+    .await;
+    assert!(fed, "the lane did not receive a value before the freeze");
+    let frozen = adapter_pids(dir.path());
+    assert_eq!(frozen.len(), 1, "{frozen:?}");
+
+    // A stopped process sends no health report: after the window the cell kills it.
+    let halted = std::process::Command::new("kill")
+        .arg("-STOP")
+        .arg(frozen[0].to_string())
+        .status()
+        .expect("kill runs");
+    assert!(halted.success());
+
+    let degraded = wait_until(|| watched.lock().expect("lock").is_lost(SessionId(1)), 20).await;
+    let recovered = wait_until(
+        || {
+            let guard = watched.lock().expect("lock");
+            !guard.is_lost(SessionId(1))
+                && guard
+                    .image()
+                    .get(PointIndex(0))
+                    .is_some_and(|slot| slot.quality == powermug_pivot::Quality::GOOD)
+        },
+        30,
+    )
+    .await;
+    let replacement = adapter_pids(dir.path());
+
+    let _ = stop.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(15), supervisor).await;
+    let _ = station.stop.send(());
+    let _ = station.task.await;
+
+    assert!(degraded, "the silent instance's session was not degraded");
+    assert!(
+        recovered,
+        "the restarted instance did not restore the values"
+    );
+    assert_eq!(replacement.len(), 1, "{replacement:?}");
+    assert_ne!(replacement, frozen, "the frozen process was not replaced");
+}

@@ -70,6 +70,8 @@ pub struct Report {
     pub rejected: u64,
     /// Session changes the core refused.
     pub refused_reports: u64,
+    /// Health reports the core accepted (§6.3, one per second).
+    pub health_reports: u64,
 }
 
 /// The loop could not run.
@@ -138,6 +140,10 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
     let mut group = RedundantClient::connect(endpoints).map_err(RunError::Group)?;
 
     let mut report = Report::default();
+    // Health every second (§6.3). A missed tick is skipped, not made up for.
+    let mut health = tokio::time::interval(std::time::Duration::from_secs(1));
+    health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut health_sequence: u64 = 0;
     let mut started: Option<usize> = None;
     // Whether the core has been told that the session is up. A new instance has told it
     // nothing yet, so its first connection is reported too (indicator and lane state).
@@ -149,6 +155,10 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
     loop {
         tokio::select! {
             () = &mut stop => break,
+            _ = health.tick() => {
+                health_sequence += 1;
+                health_report(&channel, &options, health_sequence, up_reported, &mut report).await;
+            }
             Some(ack) = stream.next_ack() => {
                 if ack.status == pb::AckStatus::Rejected as i32 {
                     report.rejected += 1;
@@ -214,6 +224,27 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
     }
     stream.finish().await?;
     Ok(report)
+}
+
+/// Sends one health report (§6.3). A refused report counts as a refused report.
+async fn health_report(
+    channel: &tonic::transport::Channel,
+    options: &Options,
+    sequence: u64,
+    connected: bool,
+    report: &mut Report,
+) {
+    let message = pb::HealthReport {
+        sequence,
+        sessions: vec![pb::SessionHealth {
+            session_id: options.session_id.to_string(),
+            connected,
+        }],
+    };
+    match client::report_health(channel.clone(), message).await {
+        Ok(_) => report.health_reports += 1,
+        Err(_) => report.refused_reports += 1,
+    }
 }
 
 async fn session_change(

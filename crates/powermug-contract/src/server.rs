@@ -1,8 +1,10 @@
 //! Serves the core's side of the contract on a Unix domain socket.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use tokio::net::UnixListener;
+use tokio::sync::Notify;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
@@ -28,7 +30,30 @@ pub async fn serve_instance(
     listener: UnixListener,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), tonic::transport::Error> {
-    let service = CoreService::new(config, sink);
+    serve(CoreService::new(config, sink), listener, shutdown).await
+}
+
+/// As [`serve_instance`], and `heartbeat` is notified on every health report (§6.3).
+///
+/// # Errors
+///
+/// Returns the transport error when the server stops abnormally.
+pub async fn serve_instance_observed(
+    config: CoreConfig,
+    sink: Box<dyn BatchSink>,
+    listener: UnixListener,
+    heartbeat: Arc<Notify>,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), tonic::transport::Error> {
+    let service = CoreService::new(config, sink).with_heartbeat(heartbeat);
+    serve(service, listener, shutdown).await
+}
+
+async fn serve(
+    service: CoreService,
+    listener: UnixListener,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), tonic::transport::Error> {
     Server::builder()
         .add_service(
             AdapterControlServer::new(service.clone())

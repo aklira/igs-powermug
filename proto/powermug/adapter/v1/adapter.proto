@@ -125,7 +125,27 @@ message AckBatch {
 service AdapterControl {
   // Handshake: the adapter describes itself, and the core accepts or refuses.
   rpc DescribeCapabilities(Capabilities) returns (HandshakeResponse);
+  // Health: the adapter reports once a second (SPECIFICATIONS §6.3). Three missed
+  // reports make the core kill the instance.
+  rpc ReportHealth(HealthReport) returns (HealthAck);
 }
+
+// One report of the adapter's health, sent every second.
+message HealthReport {
+  // Counts the reports of one instance, from 1.
+  uint64 sequence = 1;
+  // The state of each session the instance serves.
+  repeated SessionHealth sessions = 2;
+}
+
+// The state of one session, as the adapter sees it.
+message SessionHealth {
+  string session_id = 1;
+  bool connected = 2;
+}
+
+// Answer to a ReportHealth call.
+message HealthAck {}
 
 // Answer to a ReportCommunication call. Returned only once the change is
 // committed to the journal, so it is the durable acknowledgement of the change.

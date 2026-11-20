@@ -20,14 +20,14 @@ use powermug_adapter_iec104::{MappedPoint, Settings};
 use powermug_contract::handshake::{Offer, Requirement, Version};
 use powermug_contract::peer::ExpectedPeer;
 use powermug_contract::proto::v1 as pb;
-use powermug_contract::server::serve_instance;
+use powermug_contract::server::serve_instance_observed;
 use powermug_contract::service::CoreConfig;
 use powermug_core::supervisor::{Decision, Policy, Supervisor};
 use powermug_core::{Clock, Lane, LaneSink, SessionId};
 use sha2::{Digest, Sha256};
 use tokio::net::UnixListener;
 use tokio::process::Command;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{oneshot, watch, Notify};
 
 use powermug_sandbox::cgroup::{own_cgroup, Cgroup, CpuMax, Limits};
 use powermug_sandbox::SandboxError;
@@ -206,10 +206,15 @@ enum Cycle {
     Ended(String),
 }
 
+/// Silence after which an instance is dead: three missed reports of one second (§6.3).
+const HEALTH_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// How one start of the process ended.
 enum End {
     /// The process exited, or could not be waited for.
     Exited(String),
+    /// No health report within the window: the process is killed (§6.3).
+    Silent,
     /// The core's server ended before the process did.
     ServerFailed(String),
     /// The cell is stopping.
@@ -282,25 +287,37 @@ async fn run_once(
         },
     };
     let sink = Box::new(LaneSink::new(Arc::clone(lane), *clock));
+    let heartbeat = Arc::new(Notify::new());
     let (done, done_rx) = oneshot::channel::<()>();
-    let mut server = tokio::spawn(async move {
-        serve_instance(config, sink, listener, async {
+    let mut server = tokio::spawn(serve_instance_observed(
+        config,
+        sink,
+        listener,
+        Arc::clone(&heartbeat),
+        async {
             let _ = done_rx.await;
-        })
-        .await
-    });
+        },
+    ));
 
-    let end = tokio::select! {
-        status = child.wait() => End::Exited(match status {
-            Ok(status) => format!("the adapter process ended ({status})"),
-            Err(err) => format!("the adapter process cannot be waited for: {err}"),
-        }),
-        _ = stop.changed() => End::Stopped,
-        finished = &mut server => End::ServerFailed(match finished {
-            Ok(Ok(())) => "the core's server ended".to_owned(),
-            Ok(Err(err)) => format!("the core's server failed: {err}"),
-            Err(err) => format!("the core's server task failed: {err}"),
-        }),
+    // The silence window restarts with each health report (§6.3). Three missed reports
+    // make the instance a crash, and the process is killed.
+    let silence = tokio::time::sleep(HEALTH_WINDOW);
+    tokio::pin!(silence);
+    let end = loop {
+        tokio::select! {
+            status = child.wait() => break End::Exited(match status {
+                Ok(status) => format!("the adapter process ended ({status})"),
+                Err(err) => format!("the adapter process cannot be waited for: {err}"),
+            }),
+            _ = stop.changed() => break End::Stopped,
+            finished = &mut server => break End::ServerFailed(match finished {
+                Ok(Ok(())) => "the core's server ended".to_owned(),
+                Ok(Err(err)) => format!("the core's server failed: {err}"),
+                Err(err) => format!("the core's server task failed: {err}"),
+            }),
+            () = heartbeat.notified() => silence.as_mut().reset(tokio::time::Instant::now() + HEALTH_WINDOW),
+            () = &mut silence => break End::Silent,
+        }
     };
     // The process goes with its contract: a stopped server leaves no channel behind.
     let _ = child.start_kill();
@@ -311,6 +328,7 @@ async fn run_once(
     }
     match end {
         End::Exited(reason) | End::ServerFailed(reason) => Cycle::Ended(reason),
+        End::Silent => Cycle::Ended("no health report for 3 s: the process is killed".into()),
         End::Stopped => Cycle::Stopped,
     }
 }
