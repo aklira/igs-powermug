@@ -1,6 +1,6 @@
 [package]
 name = "powermug-core"
-description = "Powermug core: adapter supervision (lifecycle, restart budget, backoff, quarantine)"
+description = "Powermug core: adapter supervision and the telemetry data plane (point table, process image, lane)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,3 +12,10 @@ publish = false
 workspace = true
 
 [dependencies]
+powermug-pivot = { path = "../powermug-pivot" }
+powermug-store = { path = "../powermug-store" }
+prost = "0.14"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

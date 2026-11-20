@@ -50,7 +50,7 @@ Open review items of the sandbox, to close before P2 exit:
 ### P2 · IEC 104 telemetry loop (5 weeks) · milestone M1
 
 - [ ] `iec104-client` and `iec104-server` adapters on `igs-iec104`
-- [ ] Partition lanes, ingestion, telemetry writer with group commit, process image
+- [~] Partition lanes, ingestion, telemetry writer with group commit, process image. Done in `powermug-core`: the point table, the process image and one lane that journals a batch and then updates the image (PM-TEL-001), class C bypassing the journal; 5 tests. Not done: the group-commit writer thread shared by all lanes, the `DURABLE` ack on the adapter stream, cycle supervision, communication-loss events, destination views
 - [~] Telemetry log, snapshots, image rebuild at start. Done: the `events` table and its writes (`powermug-store`, 6 tests, blocked on decision 6 for the SQLite version). Not done: group commit writer thread, snapshots, cursors, retention, image rebuild
 - [ ] Validation stages 2 to 4 for the P2 subset; prepare, activate, rollback
 - [ ] Target API v1 (`/capabilities`, `/state`, `/revisions/*`, `/indicators`), mTLS
@@ -154,6 +154,7 @@ Exit: ACC-009, ACC-012 pass; first major-release campaign complete.
 ## Journal
 
 - **2026-11-20:** Resumed. Workspace tests pass (sandbox fault test runs only in a delegated scope). Added `powermug-pivot` (quality, `PointEvent`, `EventId`), 11 tests, clippy and fmt clean. Protobuf not started: `protoc` and `buf` are not installed on the host and there is no passwordless sudo, so the codegen choice (`protox` in pure Rust, or installed `protoc`) is open. Changes not committed.
+- **2026-11-20:** Process image and partition lane in `powermug-core` (`image.rs`, `lane.rs`): a batch is checked against the point table, journaled in one transaction, and only then applied to the image. A refused batch touches neither. Five tests on a real log. Workspace clippy and tests green. Changes not committed.
 - **2026-11-20:** P2 starts: `powermug-store` with the telemetry log (`events` table, WAL, `synchronous=FULL`, one transaction per batch, class C refused, duplicate event ids refused atomically), 6 tests. The SQLite version is blocked on decision 6 above. Changes not committed.
 - **2026-11-20:** UDS transport added to `powermug-contract`. The handshake direction was wrong in the previous commit: the core serves both services, the adapter is the client (SPECIFICATIONS §6.1), so `DescribeCapabilities` takes the adapter's `Capabilities` and returns `HandshakeResponse`. tonic is pinned to 0.14.5 (MSRV 1.75) and `tonic-build` too, because 0.14.6 and later need Rust 1.88. Nine end-to-end tests over a real socket. `cargo deny` reports duplicate-version warnings (foldhash, hashbrown, prettyplease, syn), not failures. Changes not committed.
 - **2026-11-20:** Adapter contract subset added (`powermug-contract`): handshake, South event stream, bounds, credits, peer identity decisions, 23 tests. RPC names follow [GW] §8.2 where they differ from SPECIFICATIONS §6.1, recorded as Q9 there; the pivot version rule is exact match, recorded as Q10. Transport not started. Changes not committed.
