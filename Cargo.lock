@@ -1342,11 +1342,13 @@ dependencies = [
 name = "powermug-core"
 version = "0.1.0"
 dependencies = [
+ "powermug-contract",
  "powermug-pivot",
  "powermug-store",
  "prost",
  "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

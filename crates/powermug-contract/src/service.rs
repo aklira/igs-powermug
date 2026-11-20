@@ -4,6 +4,10 @@
 //! One socket serves one instance (SPECIFICATIONS §6.1). Every RPC checks the
 //! peer's credentials, read by tonic from `SO_PEERCRED`. A `StreamEvents` call
 //! is refused until the instance has been accepted by `DescribeCapabilities`.
+//!
+//! Each accepted batch gets `RECEIVED`, then either `DURABLE` once the sink has
+//! committed it, or `REJECTED` with the reason. Its credits return with that
+//! last acknowledgement, so a refused batch does not shrink the window.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -20,6 +24,7 @@ use crate::proto::v1::{
     adapter_control_server::AdapterControl, adapter_data_server::AdapterData, AckBatch, AckStatus,
     Capabilities, EventBatch, HandshakeResponse,
 };
+use crate::sink::{BatchSink, Refusal};
 
 /// What the core requires of the instance it spawned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,18 +40,24 @@ struct Accepted {
 }
 
 /// The core's service for one adapter instance.
-#[derive(Debug, Clone)]
+///
+/// The sink is locked for the duration of one commit only. It is a blocking
+/// call run on the async task; a dedicated writer thread replaces it when the
+/// group commit arrives.
+#[derive(Clone)]
 pub struct CoreService {
     config: Arc<CoreConfig>,
     accepted: Arc<Mutex<Option<Accepted>>>,
+    sink: Arc<Mutex<Box<dyn BatchSink>>>,
 }
 
 impl CoreService {
     #[must_use]
-    pub fn new(config: CoreConfig) -> Self {
+    pub fn new(config: CoreConfig, sink: Box<dyn BatchSink>) -> Self {
         Self {
             config: Arc::new(config),
             accepted: Arc::new(Mutex::new(None)),
+            sink: Arc::new(Mutex::new(sink)),
         }
     }
 
@@ -56,6 +67,14 @@ impl CoreService {
 
     fn set_accepted(&self, accepted: Accepted) {
         *self.accepted.lock().unwrap_or_else(PoisonError::into_inner) = Some(accepted);
+    }
+}
+
+impl std::fmt::Debug for CoreService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoreService")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
     }
 }
 
@@ -121,6 +140,11 @@ fn ack(batch_sequence: u64, status: AckStatus, credits_granted: u32, reason: &st
     }
 }
 
+fn commit(sink: &Mutex<Box<dyn BatchSink>>, batch: &EventBatch) -> Result<(), Refusal> {
+    let mut sink = sink.lock().unwrap_or_else(PoisonError::into_inner);
+    sink.commit(batch)
+}
+
 #[tonic::async_trait]
 impl AdapterData for CoreService {
     type StreamEventsStream = ReceiverStream<Result<AckBatch, Status>>;
@@ -136,6 +160,7 @@ impl AdapterData for CoreService {
 
         let (tx, rx) = mpsc::channel(16);
         let mut inbound = request.into_inner();
+        let sink = Arc::clone(&self.sink);
         tokio::spawn(async move {
             // The window starts full: the adapter may send one window at once.
             let mut window = CreditWindow::new(accepted.window_events);
@@ -159,20 +184,34 @@ impl AdapterData for CoreService {
                 }
                 // Batch sizes are bounded by MAX_BATCH_EVENTS, so this fits.
                 let events = u32::try_from(batch.events.len()).unwrap_or(u32::MAX);
-                let reply = match window.consume(events) {
-                    Ok(()) => {
-                        // Events are in memory only: the store is not written
-                        // yet, so DURABLE is not sent. Credits return now.
-                        let _ = window.grant(events);
-                        ack(batch.batch_sequence, AckStatus::Received, events, "")
-                    }
-                    Err(err) => ack(
-                        batch.batch_sequence,
+                let sequence = batch.batch_sequence;
+
+                if let Err(err) = window.consume(events) {
+                    let reply = ack(
+                        sequence,
                         AckStatus::Rejected,
                         0,
                         &format!("batch exceeds the credit window: {err}"),
-                    ),
+                    );
+                    if tx.send(Ok(reply)).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+
+                if tx
+                    .send(Ok(ack(sequence, AckStatus::Received, 0, "")))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let reply = match commit(&sink, &batch) {
+                    Ok(()) => ack(sequence, AckStatus::Durable, events, ""),
+                    Err(refusal) => ack(sequence, AckStatus::Rejected, events, &refusal.reason),
                 };
+                // The batch is no longer in flight: its credits return now.
+                let _ = window.grant(events);
                 if tx.send(Ok(reply)).await.is_err() {
                     return;
                 }

@@ -11,8 +11,10 @@ use crate::proto::v1::{
     adapter_control_server::AdapterControlServer, adapter_data_server::AdapterDataServer,
 };
 use crate::service::{CoreConfig, CoreService};
+use crate::sink::BatchSink;
 
 /// Serves one adapter instance on `listener` until `shutdown` completes.
+/// Accepted batches are committed through `sink`.
 ///
 /// Each message is bounded before it is decoded: tonic refuses a frame above
 /// `max_decoding_message_size` from its length prefix (PM-ADP-002).
@@ -22,10 +24,11 @@ use crate::service::{CoreConfig, CoreService};
 /// Returns the transport error when the server stops abnormally.
 pub async fn serve_instance(
     config: CoreConfig,
+    sink: Box<dyn BatchSink>,
     listener: UnixListener,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), tonic::transport::Error> {
-    let service = CoreService::new(config);
+    let service = CoreService::new(config, sink);
     Server::builder()
         .add_service(
             AdapterControlServer::new(service.clone())

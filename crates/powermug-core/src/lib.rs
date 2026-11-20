@@ -6,10 +6,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod decode;
 pub mod image;
 pub mod lane;
+pub mod sink;
 pub mod supervisor;
 
 pub use image::{OutOfRange, ProcessImage, Slot};
-pub use lane::{Lane, LaneError, PointSpec, PointTable};
+pub use lane::{DuplicatePointId, Lane, LaneError, PointSpec, PointTable};
+pub use sink::LaneSink;
 pub use supervisor::{Decision, Policy, Refusal, State, Supervisor};

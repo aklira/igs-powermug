@@ -15,11 +15,15 @@ fn spec(point_id: &str, class: EventClass) -> PointSpec {
 }
 
 fn table() -> PointTable {
-    PointTable::new(vec![
-        spec("S3/TM_001", EventClass::A),
-        spec("S3/TM_002", EventClass::B),
-        spec("S3/CLASS_C", EventClass::C),
-    ])
+    PointTable::new(
+        4,
+        vec![
+            spec("S3/TM_001", EventClass::A),
+            spec("S3/TM_002", EventClass::B),
+            spec("S3/CLASS_C", EventClass::C),
+        ],
+    )
+    .expect("distinct point ids")
 }
 
 /// A `UUIDv7` whose last byte is `n`, so that each event id is distinct.

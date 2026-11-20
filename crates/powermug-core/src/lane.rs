@@ -4,6 +4,8 @@
 //! the journaled events, append them in one transaction, and only then update
 //! the image. A refused batch touches neither the journal nor the image.
 
+use std::collections::HashMap;
+
 use powermug_pivot::proto::v1 as pb;
 use powermug_pivot::{PointEvent, PointIndex};
 use powermug_store::{Committed, EventClass, NewEvent, StoreError, TelemetryLog};
@@ -21,16 +23,57 @@ pub struct PointSpec {
     pub class: EventClass,
 }
 
-/// The points of a lane. The index of a point is its position in the table.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// The points of a lane, from one partition revision. The index of a point is
+/// its position in the table, and its `point_id` is unique.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointTable {
+    revision_index: u32,
     specs: Vec<PointSpec>,
+    by_id: HashMap<String, PointIndex>,
 }
 
+/// Two points of one table share an identifier.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[error("point id {0} appears twice in the table")]
+pub struct DuplicatePointId(pub String);
+
 impl PointTable {
+    /// Builds the table of partition revision `revision_index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DuplicatePointId`] when two points share an identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the table holds 2^32 points or more, which no partition does.
+    pub fn new(revision_index: u32, specs: Vec<PointSpec>) -> Result<Self, DuplicatePointId> {
+        let mut by_id = HashMap::with_capacity(specs.len());
+        for (position, spec) in specs.iter().enumerate() {
+            let index = PointIndex(
+                u32::try_from(position).expect("a point table holds fewer than 2^32 points"),
+            );
+            if by_id.insert(spec.point_id.clone(), index).is_some() {
+                return Err(DuplicatePointId(spec.point_id.clone()));
+            }
+        }
+        Ok(Self {
+            revision_index,
+            specs,
+            by_id,
+        })
+    }
+
+    /// The partition revision that mapped these points.
     #[must_use]
-    pub fn new(specs: Vec<PointSpec>) -> Self {
-        Self { specs }
+    pub fn revision_index(&self) -> u32 {
+        self.revision_index
+    }
+
+    /// The index of the point with this identifier.
+    #[must_use]
+    pub fn index_of(&self, point_id: &str) -> Option<PointIndex> {
+        self.by_id.get(point_id).copied()
     }
 
     #[must_use]
@@ -69,6 +112,11 @@ pub struct Lane {
 }
 
 impl Lane {
+    #[must_use]
+    pub fn table(&self) -> &PointTable {
+        &self.table
+    }
+
     #[must_use]
     pub fn new(table: PointTable, log: TelemetryLog) -> Self {
         let image = ProcessImage::with_points(table.len());

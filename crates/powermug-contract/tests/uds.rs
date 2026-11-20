@@ -11,6 +11,7 @@ use powermug_contract::peer::ExpectedPeer;
 use powermug_contract::proto::v1 as pb;
 use powermug_contract::server::serve_instance;
 use powermug_contract::service::CoreConfig;
+use powermug_contract::sink::{BatchSink, Refusal};
 use powermug_pivot::proto::v1::Envelope;
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
@@ -25,7 +26,7 @@ struct Core {
 }
 
 impl Core {
-    fn start(expected_pid: i32) -> Self {
+    fn start(expected_pid: i32, sink: Box<dyn BatchSink>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let socket = dir.path().join("adapter.sock");
         let listener = UnixListener::bind(&socket).expect("bind");
@@ -38,7 +39,7 @@ impl Core {
             },
         };
         let (stop, stopped) = oneshot::channel::<()>();
-        let task = tokio::spawn(serve_instance(config, listener, async {
+        let task = tokio::spawn(serve_instance(config, sink, listener, async {
             let _ = stopped.await;
         }));
         Self {
@@ -53,6 +54,28 @@ impl Core {
         let _ = self.stop.send(());
         let _ = self.task.await;
     }
+}
+
+/// Commits every batch.
+struct AcceptAll;
+
+impl BatchSink for AcceptAll {
+    fn commit(&mut self, _batch: &pb::EventBatch) -> Result<(), Refusal> {
+        Ok(())
+    }
+}
+
+/// Refuses every batch.
+struct RefuseAll;
+
+impl BatchSink for RefuseAll {
+    fn commit(&mut self, _batch: &pb::EventBatch) -> Result<(), Refusal> {
+        Err(Refusal::new("refused by test"))
+    }
+}
+
+fn accept() -> Box<dyn BatchSink> {
+    Box::new(AcceptAll)
 }
 
 fn own_pid() -> i32 {
@@ -123,7 +146,7 @@ fn status_of(err: ClientError) -> tonic::Status {
 
 #[tokio::test]
 async fn handshake_is_accepted_and_returns_the_core_versions() {
-    let core = Core::start(own_pid());
+    let core = Core::start(own_pid(), accept());
     let channel = connect(&core).await;
 
     let answer = client::describe_capabilities(channel, capabilities(4))
@@ -140,7 +163,7 @@ async fn handshake_is_accepted_and_returns_the_core_versions() {
 
 #[tokio::test]
 async fn handshake_refused_on_api_major_carries_the_typed_reason() {
-    let core = Core::start(own_pid());
+    let core = Core::start(own_pid(), accept());
     let channel = connect(&core).await;
     let mut caps = capabilities(4);
     caps.api_version = Some(pb::Version { major: 2, minor: 0 });
@@ -162,7 +185,7 @@ async fn handshake_refused_on_api_major_carries_the_typed_reason() {
 
 #[tokio::test]
 async fn peer_with_another_pid_is_refused_on_every_call() {
-    let core = Core::start(own_pid() + 1);
+    let core = Core::start(own_pid() + 1, accept());
     let channel = connect(&core).await;
 
     let status = status_of(
@@ -177,7 +200,7 @@ async fn peer_with_another_pid_is_refused_on_every_call() {
 
 #[tokio::test]
 async fn stream_before_handshake_is_refused() {
-    let core = Core::start(own_pid());
+    let core = Core::start(own_pid(), accept());
     let channel = connect(&core).await;
 
     let status = status_of(
@@ -192,7 +215,7 @@ async fn stream_before_handshake_is_refused() {
 
 #[tokio::test]
 async fn batches_are_acknowledged_in_order_within_the_credit_window() {
-    let core = Core::start(own_pid());
+    let core = Core::start(own_pid(), accept());
     let channel = connect(&core).await;
     client::describe_capabilities(channel.clone(), capabilities(4))
         .await
@@ -204,11 +227,19 @@ async fn batches_are_acknowledged_in_order_within_the_credit_window() {
         .await
         .expect("streamed");
 
-    let sequences: Vec<u64> = acks.iter().map(|a| a.batch_sequence).collect();
-    assert_eq!(sequences, vec![1, 2, 3, 4, 5, 6]);
-    assert!(acks
+    let durable: Vec<u64> = acks
         .iter()
-        .all(|a| a.status == pb::AckStatus::Received as i32));
+        .filter(|a| a.status == pb::AckStatus::Durable as i32)
+        .map(|a| a.batch_sequence)
+        .collect();
+    assert_eq!(durable, vec![1, 2, 3, 4, 5, 6]);
+    let received = acks
+        .iter()
+        .filter(|a| a.status == pb::AckStatus::Received as i32)
+        .count();
+    assert_eq!(received, 6);
+    // Each batch is acknowledged RECEIVED then DURABLE, and only the final ack
+    // returns credits.
     let credits: u32 = acks.iter().map(|a| a.credits_granted).sum();
     assert_eq!(credits, 12);
     core.shutdown().await;
@@ -216,7 +247,7 @@ async fn batches_are_acknowledged_in_order_within_the_credit_window() {
 
 #[tokio::test]
 async fn batch_larger_than_the_window_is_refused_by_the_adapter() {
-    let core = Core::start(own_pid());
+    let core = Core::start(own_pid(), accept());
     let channel = connect(&core).await;
     client::describe_capabilities(channel.clone(), capabilities(4))
         .await
@@ -238,7 +269,7 @@ async fn batch_larger_than_the_window_is_refused_by_the_adapter() {
 
 #[tokio::test]
 async fn batch_above_the_event_bound_is_refused_by_the_core() {
-    let core = Core::start(own_pid());
+    let core = Core::start(own_pid(), accept());
     let channel = connect(&core).await;
     let window = 2_048;
     client::describe_capabilities(channel.clone(), capabilities(window))
@@ -258,7 +289,7 @@ async fn batch_above_the_event_bound_is_refused_by_the_core() {
 
 #[tokio::test]
 async fn frame_above_the_byte_bound_is_refused_before_decoding() {
-    let core = Core::start(own_pid());
+    let core = Core::start(own_pid(), accept());
     let channel = connect(&core).await;
     client::describe_capabilities(channel.clone(), capabilities(4))
         .await
@@ -285,7 +316,7 @@ async fn frame_above_the_byte_bound_is_refused_before_decoding() {
 
 #[tokio::test]
 async fn adapter_that_overspends_its_window_gets_a_rejection() {
-    let core = Core::start(own_pid());
+    let core = Core::start(own_pid(), accept());
     let channel = connect(&core).await;
     client::describe_capabilities(channel.clone(), capabilities(4))
         .await
@@ -303,5 +334,31 @@ async fn adapter_that_overspends_its_window_gets_a_rejection() {
     assert_eq!(ack.status, pb::AckStatus::Rejected as i32);
     assert_eq!(ack.credits_granted, 0);
     assert!(ack.reason.contains("exceeds"), "{}", ack.reason);
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn refused_batches_are_rejected_and_their_credits_return() {
+    let core = Core::start(own_pid(), Box::new(RefuseAll));
+    let channel = connect(&core).await;
+    client::describe_capabilities(channel.clone(), capabilities(4))
+        .await
+        .expect("accepted");
+
+    // Three batches of two events through a window of four: the window only
+    // flows if refused batches give their credits back.
+    let batches = (1..=3).map(|seq| batch(seq, 2)).collect();
+    let acks = client::stream_events(channel, batches, 4)
+        .await
+        .expect("streamed");
+
+    let rejected: Vec<&pb::AckBatch> = acks
+        .iter()
+        .filter(|a| a.status == pb::AckStatus::Rejected as i32)
+        .collect();
+    assert_eq!(rejected.len(), 3);
+    assert!(rejected.iter().all(|a| a.reason == "refused by test"));
+    let credits: u32 = acks.iter().map(|a| a.credits_granted).sum();
+    assert_eq!(credits, 6);
     core.shutdown().await;
 }

@@ -12,6 +12,7 @@ pub mod handshake;
 pub mod peer;
 pub mod server;
 pub mod service;
+pub mod sink;
 
 /// Generated messages of `powermug.adapter.v1`.
 #[allow(

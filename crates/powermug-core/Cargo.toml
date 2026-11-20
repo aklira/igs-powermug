@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
+powermug-contract = { path = "../powermug-contract" }
 powermug-pivot = { path = "../powermug-pivot" }
 powermug-store = { path = "../powermug-store" }
 prost = "0.14"
@@ -19,3 +20,4 @@ thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
