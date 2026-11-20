@@ -1541,6 +1541,7 @@ dependencies = [
  "powermug-core",
  "powermug-mgmt",
  "powermug-revision",
+ "powermug-sandbox",
  "powermug-store",
  "rcgen",
  "rustls",

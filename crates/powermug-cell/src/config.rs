@@ -37,7 +37,48 @@ pub struct AdaptersConfig {
     /// Directory of the instances. Each keeps its settings and its socket in a
     /// subdirectory named after its session. Absolute path.
     pub directory: PathBuf,
+    /// Limits of each instance's cgroup (§6.4).
+    #[serde(default)]
+    pub limits: InstanceLimits,
     pub instances: Vec<InstanceConfig>,
+}
+
+/// The cgroup limits of one instance (§6.4). The values are defaults to be tuned on the
+/// qualification hardware (H): the spec names the controllers, not the amounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstanceLimits {
+    /// `memory.max` in bytes. Default 512 MiB.
+    #[serde(default = "default_memory_bytes")]
+    pub memory_bytes: u64,
+    /// `pids.max`: processes and threads. Default 64.
+    #[serde(default = "default_pids")]
+    pub pids: u32,
+    /// `cpu.max` as a percentage of one core, 1 to 100. Default 100.
+    #[serde(default = "default_cpu_percent")]
+    pub cpu_percent: u32,
+}
+
+impl Default for InstanceLimits {
+    fn default() -> Self {
+        Self {
+            memory_bytes: default_memory_bytes(),
+            pids: default_pids(),
+            cpu_percent: default_cpu_percent(),
+        }
+    }
+}
+
+fn default_memory_bytes() -> u64 {
+    512 * 1024 * 1024
+}
+
+fn default_pids() -> u32 {
+    64
+}
+
+fn default_cpu_percent() -> u32 {
+    100
 }
 
 /// One South instance. Its points are the points of its session in the lanes.
@@ -135,6 +176,8 @@ pub enum ConfigError {
     BadWindow { session: u32, window: u32 },
     #[error("{0} must be an absolute path")]
     RelativePath(&'static str),
+    #[error("adapters.limits.{0} is out of bounds")]
+    BadLimit(&'static str),
     #[error("session {session} has two points at object address {address}")]
     DuplicateAddress { session: u32, address: u32 },
 }
@@ -205,6 +248,15 @@ fn check_adapters(
     }
     if !adapters.directory.is_absolute() {
         return Err(ConfigError::RelativePath("adapters.directory"));
+    }
+    if adapters.limits.memory_bytes == 0 {
+        return Err(ConfigError::BadLimit("memory_bytes"));
+    }
+    if adapters.limits.pids == 0 {
+        return Err(ConfigError::BadLimit("pids"));
+    }
+    if !(1..=100).contains(&adapters.limits.cpu_percent) {
+        return Err(ConfigError::BadLimit("cpu_percent"));
     }
     let mut seen = HashSet::new();
     for instance in &adapters.instances {
@@ -435,6 +487,29 @@ mod tests {
         assert_eq!(
             CellConfig::from_json(&relative),
             Err(ConfigError::RelativePath("adapters.binary"))
+        );
+    }
+
+    #[test]
+    fn the_instance_limits_default_and_are_bounded() {
+        let config = CellConfig::from_json(&with_adapters(GOOD_INSTANCE)).expect("valid");
+        assert_eq!(
+            config.adapters.expect("section").limits,
+            InstanceLimits::default()
+        );
+        let zero_pids = with_adapters(GOOD_INSTANCE)
+            .replace("\"instances\"", "\"limits\": {\"pids\": 0}, \"instances\"");
+        assert_eq!(
+            CellConfig::from_json(&zero_pids),
+            Err(ConfigError::BadLimit("pids"))
+        );
+        let too_much_cpu = with_adapters(GOOD_INSTANCE).replace(
+            "\"instances\"",
+            "\"limits\": {\"cpu_percent\": 101}, \"instances\"",
+        );
+        assert_eq!(
+            CellConfig::from_json(&too_much_cpu),
+            Err(ConfigError::BadLimit("cpu_percent"))
         );
     }
 

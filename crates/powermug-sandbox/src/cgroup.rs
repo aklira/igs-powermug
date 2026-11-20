@@ -18,6 +18,15 @@ pub struct Limits {
     pub pids_max: Option<u32>,
     /// `memory.swap.max = 0` when true: the instance cannot swap.
     pub no_swap: bool,
+    /// `cpu.max`: CPU time per period.
+    pub cpu_max: Option<CpuMax>,
+}
+
+/// `cpu.max`: at most `quota_us` microseconds of CPU in each `period_us`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuMax {
+    pub quota_us: u64,
+    pub period_us: u64,
 }
 
 /// A cgroup directory owned by the sandbox.
@@ -96,6 +105,12 @@ impl Cgroup {
         }
         if limits.no_swap {
             write(&path.join("memory.swap.max"), "0")?;
+        }
+        if let Some(cpu) = limits.cpu_max {
+            write(
+                &path.join("cpu.max"),
+                &format!("{} {}", cpu.quota_us, cpu.period_us),
+            )?;
         }
         Ok(Self::at(path))
     }

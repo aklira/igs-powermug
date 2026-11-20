@@ -46,6 +46,8 @@ pub enum CellError {
     Tls(#[from] TlsError),
     #[error("cannot listen on the management address: {0}")]
     Listen(String),
+    #[error(transparent)]
+    Sandbox(#[from] powermug_sandbox::SandboxError),
 }
 
 /// The indicators of the cell: those of every lane, measured together.
@@ -149,7 +151,13 @@ pub async fn serve(
 
     // The South instances stop with the cell: a stop signal reaches each supervisor.
     let (stop, stopped) = watch::channel(false);
-    let instances = adapters::instances(&config)?;
+    let mut instances = adapters::instances(&config)?;
+    let limits = config
+        .adapters
+        .as_ref()
+        .map(|adapters| adapters.limits)
+        .unwrap_or_default();
+    adapters::provision(&mut instances, limits)?;
     let supervisors: Vec<_> = instances
         .into_iter()
         .map(|instance| {

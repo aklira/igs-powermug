@@ -105,6 +105,7 @@ fn faulty_adapters_die_alone_and_healthy_ones_keep_running() {
         memory_max: Some(64 * 1024 * 1024),
         pids_max: Some(32),
         no_swap: true,
+        ..Limits::default()
     };
 
     // Healthy instances run for 6 s; the faults happen meanwhile.

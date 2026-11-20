@@ -29,7 +29,10 @@ use tokio::net::UnixListener;
 use tokio::process::Command;
 use tokio::sync::{oneshot, watch};
 
-use crate::config::{instance_directory, CellConfig, ConfigError};
+use powermug_sandbox::cgroup::{own_cgroup, Cgroup, CpuMax, Limits};
+use powermug_sandbox::SandboxError;
+
+use crate::config::{instance_directory, CellConfig, ConfigError, InstanceLimits};
 
 /// One South instance, as the configuration describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +47,41 @@ pub struct Instance {
     pub lane: usize,
     /// The settings written for the adapter. The artifact digest is filled at start.
     pub settings: Settings,
+    /// The instance's cgroup, once [`provision`] has created it.
+    pub cgroup: Option<PathBuf>,
+}
+
+/// Creates the cgroup of each instance under the cell's delegated subtree (§6.4).
+///
+/// The cell moves itself into a leaf of its subtree, so that the subtree can hold the
+/// controllers, then creates one group per instance with its limits. A cell whose subtree
+/// is not delegated refuses to run the instances (PM-ADP-005, production profile).
+///
+/// # Errors
+///
+/// Returns [`SandboxError`] when the subtree is not delegated or a limit file is refused.
+pub fn provision(instances: &mut [Instance], limits: InstanceLimits) -> Result<(), SandboxError> {
+    if instances.is_empty() {
+        return Ok(());
+    }
+    let cell = Cgroup::delegate_subtree(&own_cgroup()?, &["cpu", "memory", "pids"])?;
+    for instance in instances {
+        let group = cell.create_child(
+            &format!("adapter-{}", instance.session),
+            Limits {
+                memory_max: Some(limits.memory_bytes),
+                pids_max: Some(limits.pids),
+                no_swap: true,
+                cpu_max: Some(CpuMax {
+                    // One core is 100 000 µs of CPU per 100 000 µs period.
+                    quota_us: u64::from(limits.cpu_percent) * 1000,
+                    period_us: 100_000,
+                }),
+            },
+        )?;
+        instance.cgroup = Some(group.path().to_path_buf());
+    }
+    Ok(())
 }
 
 /// How the supervision of an instance ended.
@@ -101,6 +139,7 @@ pub fn instances(config: &CellConfig) -> Result<Vec<Instance>, ConfigError> {
                     artifact_sha256: String::new(),
                     window_events: item.window_events,
                 },
+                cgroup: None,
             })
         })
         .collect()
@@ -211,6 +250,9 @@ async fn run_once(
 
     let mut command = Command::new(&instance.binary);
     command.arg("spawner").arg("--protocol");
+    if let Some(cgroup) = &instance.cgroup {
+        command.arg("--cgroup").arg(cgroup);
+    }
     for path in read_paths(&instance.binary) {
         command.arg("--read").arg(path);
     }

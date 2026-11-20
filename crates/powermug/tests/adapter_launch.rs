@@ -13,11 +13,13 @@ use igs_iec104::process_image::PointValue;
 use igs_iec104::server::{Handler, Operation, Refusal, Server, ServerConfig, ServerHandle};
 use igs_iec104_codec::elements::{Qds, QualityFlags, ShortFloat, Siq};
 use igs_iec104_codec::header::{CommonAddress, InformationObjectAddress};
-use powermug_cell::adapters::{instances, supervise, Outcome};
+use powermug_cell::adapters::{instances, provision, supervise, Outcome};
+use powermug_cell::config::InstanceLimits;
 use powermug_cell::CellConfig;
 use powermug_core::supervisor::Policy;
 use powermug_core::{Lane, SessionId};
 use powermug_pivot::{PointIndex, Value};
+use powermug_sandbox::features::probe;
 use powermug_store::TelemetryLog;
 use tokio::sync::watch;
 
@@ -324,4 +326,99 @@ async fn a_killed_adapter_degrades_its_session_and_is_restarted() {
         "the restarted adapter did not restore the values: {state}"
     );
     assert_eq!(outcome, Outcome::Stopped);
+}
+
+/// The cgroup checks need a delegated cgroup v2 subtree. Run the test binary as
+/// `systemd-run --user --scope -q -p Delegate=yes -- <binary>`. Elsewhere the test is
+/// skipped with a message, or fails when `POWERMUG_REQUIRE_SANDBOX` is set.
+fn cgroup_delegated() -> bool {
+    let features = probe();
+    if features.cgroup_delegated && features.memory_controller {
+        return true;
+    }
+    assert!(
+        std::env::var_os("POWERMUG_REQUIRE_SANDBOX").is_none(),
+        "POWERMUG_REQUIRE_SANDBOX is set but the cgroup subtree is not delegated"
+    );
+    eprintln!(
+        "skipped: needs a delegated cgroup v2 subtree (systemd-run --user --scope -p Delegate=yes)"
+    );
+    false
+}
+
+#[tokio::test]
+async fn an_instance_runs_in_its_cgroup_under_its_limits() {
+    if !cgroup_delegated() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    let station = start_station().await;
+    let config = configuration(dir.path(), station.addr, BIN);
+    let lane = lane_of(&config, dir.path());
+    let mut planned = instances(&config).expect("instances");
+    let limits = InstanceLimits {
+        memory_bytes: 64 * 1024 * 1024,
+        pids: 32,
+        cpu_percent: 50,
+    };
+    provision(&mut planned, limits).expect("cgroups created");
+    let instance = planned.remove(0);
+    let group = instance.cgroup.clone().expect("the instance has a cgroup");
+
+    let (stop, stopped) = watch::channel(false);
+    let supervisor = tokio::spawn(supervise(
+        instance,
+        Arc::clone(&lane),
+        Policy::default(),
+        stopped,
+    ));
+    let watched = Arc::clone(&lane);
+    let fed = wait_until(
+        || {
+            watched
+                .lock()
+                .expect("lock")
+                .image()
+                .get(PointIndex(0))
+                .is_some()
+        },
+        30,
+    )
+    .await;
+    let pids = adapter_pids(dir.path());
+    let read = |file: &str| {
+        std::fs::read_to_string(group.join(file))
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    };
+    let members = read("cgroup.procs");
+    let checks = (
+        read("memory.max"),
+        read("memory.swap.max"),
+        read("pids.max"),
+        read("cpu.max"),
+    );
+
+    let _ = stop.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(15), supervisor).await;
+    let _ = station.stop.send(());
+    let _ = station.task.await;
+
+    assert!(fed, "the lane did not receive a value");
+    assert_eq!(pids.len(), 1, "one adapter process expected: {pids:?}");
+    assert!(
+        members.lines().any(|pid| pid == pids[0].to_string()),
+        "the adapter is not in its cgroup: {members:?}"
+    );
+    assert_eq!(
+        checks,
+        (
+            (64 * 1024 * 1024u64).to_string(),
+            "0".to_owned(),
+            "32".to_owned(),
+            "50000 100000".to_owned()
+        ),
+        "memory.max, memory.swap.max, pids.max, cpu.max"
+    );
 }
