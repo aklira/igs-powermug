@@ -1,6 +1,7 @@
 //! A lane on a real telemetry log: the journal and the image move together.
 
 use powermug_core::lane::{Lane, LaneError, PointSpec, PointTable};
+use powermug_core::Times;
 use powermug_pivot::proto::v1 as pb;
 use powermug_pivot::{EventId, PointEvent, PointIndex, Quality, Value};
 use powermug_store::{EventClass, StoreError, TelemetryLog};
@@ -11,6 +12,7 @@ fn spec(point_id: &str, class: EventClass) -> PointSpec {
         site_id: "S3".into(),
         point_id: point_id.into(),
         class,
+        supervision: None,
     }
 }
 
@@ -48,9 +50,16 @@ fn event(point: u32, id: u8, value: Value) -> PointEvent {
     }
 }
 
+fn at() -> Times {
+    Times {
+        monotonic_ns: 0,
+        wall_ns: 0,
+    }
+}
+
 fn lane(dir: &tempfile::TempDir) -> Lane {
     let log = TelemetryLog::open(dir.path().join("telemetry.db")).expect("opens");
-    Lane::new(table(), log)
+    Lane::new(table(), log, 0)
 }
 
 #[test]
@@ -59,7 +68,10 @@ fn journaled_events_reach_the_log_and_the_image() {
     let mut lane = lane(&dir);
 
     let committed = lane
-        .ingest(&[event(0, 1, Value::Int(5)), event(1, 2, Value::Double(2.5))])
+        .ingest(
+            &[event(0, 1, Value::Int(5)), event(1, 2, Value::Double(2.5))],
+            at(),
+        )
         .expect("ingests");
 
     let committed = committed.expect("two journaled events");
@@ -88,7 +100,7 @@ fn class_c_updates_the_image_without_a_journal_row() {
     let mut lane = lane(&dir);
 
     let committed = lane
-        .ingest(&[event(2, 1, Value::Bool(true))])
+        .ingest(&[event(2, 1, Value::Bool(true))], at())
         .expect("ingests");
 
     assert_eq!(committed, None);
@@ -105,7 +117,10 @@ fn unknown_point_refuses_the_whole_batch() {
     let mut lane = lane(&dir);
 
     let err = lane
-        .ingest(&[event(0, 1, Value::Int(1)), event(9, 2, Value::Int(2))])
+        .ingest(
+            &[event(0, 1, Value::Int(1)), event(9, 2, Value::Int(2))],
+            at(),
+        )
         .expect_err("refused");
 
     assert!(matches!(err, LaneError::UnknownPoint(9)));
@@ -119,10 +134,11 @@ fn replayed_event_leaves_the_image_unchanged() {
     // journal refuses must not reach the image.
     let dir = tempfile::tempdir().expect("temp dir");
     let mut lane = lane(&dir);
-    lane.ingest(&[event(0, 1, Value::Int(1))]).expect("first");
+    lane.ingest(&[event(0, 1, Value::Int(1))], at())
+        .expect("first");
 
     let err = lane
-        .ingest(&[event(0, 1, Value::Int(99))])
+        .ingest(&[event(0, 1, Value::Int(99))], at())
         .expect_err("replay refused");
 
     assert!(matches!(err, LaneError::Store(StoreError::DuplicateEvent)));
@@ -136,8 +152,10 @@ fn replayed_event_leaves_the_image_unchanged() {
 fn later_value_replaces_the_slot() {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut lane = lane(&dir);
-    lane.ingest(&[event(0, 1, Value::Int(1))]).expect("first");
-    lane.ingest(&[event(0, 2, Value::Int(2))]).expect("second");
+    lane.ingest(&[event(0, 1, Value::Int(1))], at())
+        .expect("first");
+    lane.ingest(&[event(0, 2, Value::Int(2))], at())
+        .expect("second");
 
     let slot = lane.image().get(PointIndex(0)).expect("has a value");
     assert_eq!(slot.value, Value::Int(2));

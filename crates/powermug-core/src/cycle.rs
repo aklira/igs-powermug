@@ -238,6 +238,25 @@ impl CycleSupervisor {
         expired
     }
 
+    /// Undoes expiries whose stale events were not committed. The points go
+    /// back to `Fresh` with their deadlines, so the next call to `expire` reports
+    /// them again. Nothing is reported as stale without its event in the log.
+    pub fn revert(&mut self, expired: &[Expired]) {
+        for item in expired {
+            let Some(entry) = self.entries.get_mut(item.point.0 as usize) else {
+                continue;
+            };
+            if entry.state == CycleState::Stale && entry.deadline_ns == item.deadline_ns {
+                entry.state = CycleState::Fresh;
+                self.wheel.insert(Timer {
+                    point: item.point.0,
+                    generation: entry.generation,
+                    deadline_ns: item.deadline_ns,
+                });
+            }
+        }
+    }
+
     /// The state of `point`, or `None` outside the table.
     #[must_use]
     pub fn state(&self, point: PointIndex) -> Option<CycleState> {

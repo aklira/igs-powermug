@@ -72,6 +72,14 @@ message Value {
   }
 }
 
+// Cause of an event: the normalized cause and the native one, when the
+// protocol carries it. Normalized values: "supervision" (cycle check),
+// "acquisition", "command", "communication_loss" (SPECIFICATIONS §5.1, [GW] §9.2).
+message Cause {
+  string normalized = 1;
+  string native = 2;
+}
+
 // Common envelope of a point event (SPECIFICATIONS §5.1, [GW] §9.2).
 message Envelope {
   // UUIDv7, 16 bytes, assigned by the core before DURABLE acknowledgement.
@@ -100,4 +108,6 @@ message Envelope {
   uint64 source_epoch = 15;
   // True for replayed events, false for live ones.
   bool replay = 16;
+  // Why the event was produced.
+  Cause cause = 17;
 }

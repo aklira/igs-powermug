@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod clock;
 pub mod cycle;
 pub mod decode;
 pub mod image;
@@ -13,6 +14,7 @@ pub mod lane;
 pub mod sink;
 pub mod supervisor;
 
+pub use clock::{Clock, Times};
 pub use cycle::{CycleState, CycleSupervisor, Expired, Supervision};
 pub use image::{OutOfRange, ProcessImage, Slot};
 pub use lane::{DuplicatePointId, Lane, LaneError, PointSpec, PointTable};

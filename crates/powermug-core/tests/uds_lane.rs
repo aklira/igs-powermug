@@ -10,7 +10,7 @@ use powermug_contract::peer::ExpectedPeer;
 use powermug_contract::proto::v1 as pb;
 use powermug_contract::server::serve_instance;
 use powermug_contract::service::CoreConfig;
-use powermug_core::{Lane, LaneSink, PointSpec, PointTable};
+use powermug_core::{Clock, Lane, LaneSink, PointSpec, PointTable};
 use powermug_pivot::proto::v1 as pv;
 use powermug_pivot::{PointIndex, Value};
 use powermug_store::{EventClass, TelemetryLog};
@@ -31,6 +31,7 @@ fn point(point_id: &str, class: EventClass) -> PointSpec {
         site_id: "S3".into(),
         point_id: point_id.into(),
         class,
+        supervision: None,
     }
 }
 
@@ -46,7 +47,7 @@ fn setup() -> Setup {
         ],
     )
     .expect("distinct");
-    let lane = Arc::new(Mutex::new(Lane::new(table, log)));
+    let lane = Arc::new(Mutex::new(Lane::new(table, log, 0)));
 
     let socket = dir.path().join("adapter.sock");
     let listener = UnixListener::bind(&socket).expect("bind");
@@ -67,7 +68,7 @@ fn setup() -> Setup {
         },
     };
     let (stop, stopped) = oneshot::channel::<()>();
-    let sink = Box::new(LaneSink::new(Arc::clone(&lane)));
+    let sink = Box::new(LaneSink::new(Arc::clone(&lane), Clock::new()));
     let task = tokio::spawn(async move {
         let _ = serve_instance(config, sink, listener, async {
             let _ = stopped.await;
