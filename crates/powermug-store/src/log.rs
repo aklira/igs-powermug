@@ -22,7 +22,7 @@ pub enum EventClass {
 }
 
 impl EventClass {
-    const fn code(self) -> i64 {
+    pub(crate) const fn code(self) -> i64 {
         match self {
             Self::A => 1,
             Self::B => 2,
@@ -102,6 +102,14 @@ pub enum StoreError {
     CommitFailed(String),
     #[error("the writer has stopped")]
     WriterStopped,
+    #[error("destination {0} has no cursor")]
+    UnknownCursor(String),
+    #[error("destination {0} exists with another kind (flux or image)")]
+    CursorConflict(String),
+    #[error("sequence {seq} is not journaled yet: the log ends at {last}")]
+    AheadOfLog { seq: i64, last: i64 },
+    #[error("retention refused: {0}")]
+    ProtectedClass(&'static str),
 }
 
 const SCHEMA: &str = "
@@ -126,7 +134,7 @@ CREATE TABLE IF NOT EXISTS events (
 /// The telemetry log of one cell.
 #[derive(Debug)]
 pub struct TelemetryLog {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl TelemetryLog {
@@ -140,6 +148,7 @@ impl TelemetryLog {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::cursors::SCHEMA)?;
         Ok(Self { conn })
     }
 
