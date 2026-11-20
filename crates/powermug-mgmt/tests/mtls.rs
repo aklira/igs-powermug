@@ -67,6 +67,11 @@ async fn capabilities_name_the_profile_and_do_not_claim_the_sandbox() {
     assert_eq!(document["target_profile"], "powermug@1");
     assert_eq!(document["sandbox"], "unverified");
     assert_eq!(document["capabilities"]["south.iec104"], "1.0");
+    assert_eq!(document["capabilities"]["target.state.rest"], "1.0");
+    // Listed by the profile, not implemented: must not be claimed.
+    assert!(document["capabilities"]["north.kafka"].is_null());
+    assert!(document["capabilities"]["cmd.direct"].is_null());
+    assert!(document["capabilities"]["dest.flux"].is_null());
 }
 
 #[tokio::test]

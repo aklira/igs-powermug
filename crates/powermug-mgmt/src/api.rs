@@ -146,11 +146,17 @@ impl IntoResponse for ApiError {
 async fn capabilities(State(api): State<Arc<Api>>) -> Json<Value> {
     let profile = &api.profile;
     let limits = &profile.limits;
+    // A planner assigns work from this list: only what this build does is claimed.
+    let served: std::collections::BTreeMap<&String, &String> = profile
+        .capabilities
+        .iter()
+        .filter(|(name, _)| IMPLEMENTED.contains(&name.as_str()))
+        .collect();
     Json(json!({
         "contract_version": profile.contract_version,
         "target_profile": profile.name,
         "product": { "name": "powermug", "version": env!("CARGO_PKG_VERSION") },
-        "capabilities": profile.capabilities,
+        "capabilities": served,
         "limits": {
             "max_partitions": limits.max_partitions,
             "max_rtu": limits.max_rtu,
@@ -164,6 +170,12 @@ async fn capabilities(State(api): State<Arc<Api>>) -> Json<Value> {
         "sandbox": "unverified",
     }))
 }
+
+/// The capabilities of `powermug@1` this build implements. The profile lists more (§11.2),
+/// and stage 3 validates revisions against the whole profile; the cell claims only these.
+/// `indicators.v1` and `scope.cell` are not claimed: only two of the indicators exist and
+/// the cell has no scope model beyond itself.
+pub const IMPLEMENTED: &[&str] = &["south.iec104", "target.state.rest", "target.revision.rest"];
 
 /// The neutral indicators of §11.3, measured at the time of the request.
 async fn indicators(State(api): State<Arc<Api>>) -> Json<Value> {

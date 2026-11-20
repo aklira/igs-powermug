@@ -40,8 +40,18 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Interrupt (Ctrl-C) and termination (systemd, podman stop) both stop the cell in order.
     let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
+        let terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+        match terminate {
+            Ok(mut terminate) => tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = terminate.recv() => {}
+            },
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
     };
     match serve(config, shutdown).await {
         Ok(()) => ExitCode::SUCCESS,
