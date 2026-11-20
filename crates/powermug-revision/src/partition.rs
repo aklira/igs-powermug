@@ -30,6 +30,10 @@ pub struct PartitionRevision {
 pub struct Metadata {
     pub cell: String,
     pub site: String,
+    /// Id of the revision this one was prepared against. Absent for the first one.
+    /// Not in §10.3: a default of this subset, to confirm.
+    #[serde(default)]
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -149,6 +153,32 @@ pub fn validate_stage3(document: &Value, profile: &crate::profile::Profile) -> V
     }
     findings.sort();
     findings
+}
+
+/// Stage 4 of the validation (§10.4) on the P2 subset, the part that needs the
+/// live partition: the revision was prepared against the revision that is active
+/// now (PM-CFG-003, optimistic concurrency). `active` is the active revision of the
+/// partition's scope in the critical store, if any. A mismatch is the 409 of §10.2.
+///
+/// The other stage 4 checks (signature, trust, storage margin, the adapters'
+/// `ValidateConfig` and `PrepareConfig`, the passive node) are not in this subset.
+#[must_use]
+pub fn validate_stage4(document: &Value, active: Option<&str>) -> Vec<Finding> {
+    let revision = match parse(document) {
+        Ok(revision) => revision,
+        Err(finding) => return vec![finding],
+    };
+    let parent = revision.metadata.parent.as_deref();
+    if parent == active {
+        return Vec::new();
+    }
+    vec![Finding {
+        code: "PMV-CEL-001",
+        pointer: "/metadata/parent".to_owned(),
+        message: format!(
+            "the revision was prepared against {parent:?}, but {active:?} is active (409)"
+        ),
+    }]
 }
 
 /// Stage 2 of the validation on the P2 subset: unique identifiers and addresses,
@@ -332,6 +362,26 @@ mod tests {
         let mut doc = document();
         doc["spec"]["sessions"][0]["common_address"] = json!(0);
         assert_eq!(codes(&validate_stage2(&doc)), vec!["PMV-SEM-007"]);
+    }
+
+    #[test]
+    fn a_revision_prepared_against_the_active_one_passes_stage_four() {
+        let mut doc = document();
+        doc["metadata"]["parent"] = json!("r1");
+        assert_eq!(validate_stage4(&doc, Some("r1")), Vec::new());
+    }
+
+    #[test]
+    fn the_first_revision_passes_stage_four_when_nothing_is_active() {
+        assert_eq!(validate_stage4(&document(), None), Vec::new());
+    }
+
+    #[test]
+    fn a_revision_prepared_against_an_old_parent_is_refused() {
+        let mut doc = document();
+        doc["metadata"]["parent"] = json!("r1");
+        let findings = validate_stage4(&doc, Some("r2"));
+        assert_eq!(codes_of(&findings), vec!["PMV-CEL-001"]);
     }
 
     fn small_profile() -> crate::profile::Profile {
