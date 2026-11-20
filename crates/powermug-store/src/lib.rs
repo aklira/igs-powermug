@@ -10,7 +10,7 @@ mod journal;
 mod log;
 mod writer;
 
-pub use cursors::{Cursor, Enforced, Policy, Replay, Start};
+pub use cursors::{Cursor, Enforced, Policy, Replay, RetentionAudit, Start};
 pub use generation::{CriticalStore, GenerationError, Outcome, RevisionStatus, ScopeState};
 pub use journal::{Journal, OwnedEvent};
 pub use log::{Committed, EventClass, NewEvent, Snapshot, StoreError, StoredEvent, TelemetryLog};

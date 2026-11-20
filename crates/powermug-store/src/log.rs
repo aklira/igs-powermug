@@ -31,7 +31,7 @@ impl EventClass {
         }
     }
 
-    fn from_code(code: i64) -> Option<Self> {
+    pub(crate) fn from_code(code: i64) -> Option<Self> {
         match code {
             1 => Some(Self::A),
             2 => Some(Self::B),

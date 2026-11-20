@@ -259,3 +259,45 @@ fn removing_a_cursor_releases_the_events_it_protected() {
     // Without its cursor, the remaining class A events are no longer protected at all.
     assert_eq!(log.enforce_retention(NOW).expect("enforces")[0].deleted, 0);
 }
+
+#[test]
+fn every_deletion_is_recorded_with_the_policy_that_caused_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut log = log(&dir);
+    append(&mut log, &[(EventClass::A, 0); 3]);
+    append(&mut log, &[(EventClass::B, 0); 4]);
+    log.declare_cursor("scada", true, Start::OldestRetained, NOW)
+        .expect("declares");
+    log.acknowledge("scada", 2, NOW).expect("acks");
+    log.set_retention(
+        EventClass::A,
+        Policy {
+            max_events: Some(0),
+            max_age_ns: None,
+        },
+    )
+    .expect("sets");
+    log.set_retention(
+        EventClass::B,
+        Policy {
+            max_events: Some(1),
+            max_age_ns: None,
+        },
+    )
+    .expect("sets");
+
+    // A pass that deletes nothing is not recorded.
+    log.enforce_retention(NOW).expect("enforces");
+    assert_eq!(log.retention_audit().expect("reads").len(), 2);
+
+    let audit = log.retention_audit().expect("reads");
+    assert_eq!(audit[0].class, EventClass::A);
+    assert_eq!(audit[0].deleted, 2);
+    assert_eq!(audit[0].max_events, Some(0));
+    assert_eq!(audit[0].floor_seq, Some(2));
+    assert_eq!(audit[1].class, EventClass::B);
+    assert_eq!(audit[1].deleted, 3);
+    assert_eq!(audit[1].max_events, Some(1));
+    assert_eq!(audit[1].floor_seq, None);
+    assert_eq!(audit[1].at_ns, NOW);
+}

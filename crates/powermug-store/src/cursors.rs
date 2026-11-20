@@ -24,6 +24,16 @@ CREATE TABLE IF NOT EXISTS retention (
     max_age_ns  INTEGER,
     dropped     INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS retention_audit (
+    id          INTEGER PRIMARY KEY,
+    at_ns       INTEGER NOT NULL,
+    class       INTEGER NOT NULL,
+    deleted     INTEGER NOT NULL,
+    max_events  INTEGER,
+    max_age_ns  INTEGER,
+    floor_seq   INTEGER
+);
+CREATE INDEX IF NOT EXISTS events_class_seq ON events (class, seq);
 ";
 
 /// Where a new destination starts (PM-TEL-004).
@@ -64,6 +74,19 @@ pub struct Policy {
     pub max_events: Option<u64>,
     /// The age beyond which an event of the class is deleted, in nanoseconds.
     pub max_age_ns: Option<i64>,
+}
+
+/// One deletion recorded by retention, with the policy in effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionAudit {
+    pub id: i64,
+    pub at_ns: i64,
+    pub class: EventClass,
+    pub deleted: u64,
+    pub max_events: Option<u64>,
+    pub max_age_ns: Option<i64>,
+    /// The flux cursors' floor that bounded the deletion: class A only.
+    pub floor_seq: Option<i64>,
 }
 
 /// What one enforcement deleted from one class.
@@ -310,6 +333,23 @@ impl TelemetryLog {
                     i64::try_from(deleted_count).unwrap_or(i64::MAX)
                 ],
             )?;
+            if deleted_count > 0 {
+                // FUN-SAF-007: the deletion is recorded with the policy that caused it.
+                let floor_seq = (floor != i64::MAX).then_some(floor);
+                tx.execute(
+                    "INSERT INTO retention_audit
+                        (at_ns, class, deleted, max_events, max_age_ns, floor_seq)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        now_ns,
+                        class_code(class),
+                        i64::try_from(deleted_count).unwrap_or(i64::MAX),
+                        max_events,
+                        max_age_ns,
+                        floor_seq
+                    ],
+                )?;
+            }
             outcome.push(Enforced {
                 class,
                 deleted: deleted_count,
@@ -318,6 +358,44 @@ impl TelemetryLog {
         }
         tx.commit()?;
         Ok(outcome)
+    }
+
+    /// The deletions recorded by retention, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Database`] on a read failure.
+    pub fn retention_audit(&self) -> Result<Vec<RetentionAudit>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, at_ns, class, deleted, max_events, max_age_ns, floor_seq
+             FROM retention_audit ORDER BY id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+            ))
+        })?;
+        let mut audit = Vec::new();
+        for row in rows {
+            let (id, at_ns, class, deleted, max_events, max_age_ns, floor_seq) = row?;
+            let class = EventClass::from_code(class).ok_or(StoreError::UnknownClass(class))?;
+            audit.push(RetentionAudit {
+                id,
+                at_ns,
+                class,
+                deleted: u64::try_from(deleted).unwrap_or(0),
+                max_events: max_events.map(|n| u64::try_from(n).unwrap_or(0)),
+                max_age_ns,
+                floor_seq,
+            });
+        }
+        Ok(audit)
     }
 
     /// Events deleted by retention, per class, since the log was created.
