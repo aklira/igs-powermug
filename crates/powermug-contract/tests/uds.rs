@@ -12,6 +12,7 @@ use powermug_contract::proto::v1 as pb;
 use powermug_contract::server::serve_instance;
 use powermug_contract::service::CoreConfig;
 use powermug_contract::sink::{BatchSink, Refusal};
+use powermug_pivot::proto::v1::CommunicationState;
 use powermug_pivot::proto::v1::Envelope;
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
@@ -63,6 +64,10 @@ impl BatchSink for AcceptAll {
     fn commit(&mut self, _batch: &pb::EventBatch) -> Result<(), Refusal> {
         Ok(())
     }
+
+    fn communication(&mut self, _state: &CommunicationState) -> Result<(), Refusal> {
+        Ok(())
+    }
 }
 
 /// Refuses every batch.
@@ -70,6 +75,10 @@ struct RefuseAll;
 
 impl BatchSink for RefuseAll {
     fn commit(&mut self, _batch: &pb::EventBatch) -> Result<(), Refusal> {
+        Err(Refusal::new("refused by test"))
+    }
+
+    fn communication(&mut self, _state: &CommunicationState) -> Result<(), Refusal> {
         Err(Refusal::new("refused by test"))
     }
 }
@@ -360,5 +369,62 @@ async fn refused_batches_are_rejected_and_their_credits_return() {
     assert!(rejected.iter().all(|a| a.reason == "refused by test"));
     let credits: u32 = acks.iter().map(|a| a.credits_granted).sum();
     assert_eq!(credits, 6);
+    core.shutdown().await;
+}
+
+fn lost_state() -> CommunicationState {
+    CommunicationState {
+        site_id: "S3".into(),
+        session_id: "1".into(),
+        connected: false,
+        reason: "keepalive timeout".into(),
+    }
+}
+
+#[tokio::test]
+async fn communication_report_before_handshake_is_refused() {
+    let core = Core::start(own_pid(), accept());
+    let channel = connect(&core).await;
+
+    let status = status_of(
+        client::report_communication(channel, lost_state())
+            .await
+            .expect_err("refused"),
+    );
+
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn committed_communication_report_is_acknowledged() {
+    let core = Core::start(own_pid(), accept());
+    let channel = connect(&core).await;
+    client::describe_capabilities(channel.clone(), capabilities(4))
+        .await
+        .expect("accepted");
+
+    client::report_communication(channel, lost_state())
+        .await
+        .expect("acknowledged after commit");
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn refused_communication_report_carries_the_reason() {
+    let core = Core::start(own_pid(), Box::new(RefuseAll));
+    let channel = connect(&core).await;
+    client::describe_capabilities(channel.clone(), capabilities(4))
+        .await
+        .expect("accepted");
+
+    let status = status_of(
+        client::report_communication(channel, lost_state())
+            .await
+            .expect_err("refused"),
+    );
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_eq!(status.message(), "refused by test");
     core.shutdown().await;
 }

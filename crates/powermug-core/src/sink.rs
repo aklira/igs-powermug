@@ -5,10 +5,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use powermug_contract::proto::v1::EventBatch;
 use powermug_contract::sink::{BatchSink, Refusal};
+use powermug_pivot::proto::v1::CommunicationState;
 
 use crate::clock::Clock;
 use crate::decode::batch_events;
-use crate::lane::Lane;
+use crate::lane::{Lane, SessionId};
 
 /// Feeds the adapter stream of one partition into its lane.
 ///
@@ -33,6 +34,26 @@ impl BatchSink for LaneSink {
         let events = batch_events(batch, lane.table(), times.wall_ns)
             .map_err(|err| Refusal::new(err.to_string()))?;
         lane.ingest(&events, times)
+            .map(|_| ())
+            .map_err(|err| Refusal::new(err.to_string()))
+    }
+
+    fn communication(&mut self, state: &CommunicationState) -> Result<(), Refusal> {
+        let session = state
+            .session_id
+            .parse::<u32>()
+            .map(SessionId)
+            .map_err(|_| {
+                Refusal::new(format!("session id {} is not a number", state.session_id))
+            })?;
+        let times = self.clock.now();
+        let mut lane = self.lane.lock().unwrap_or_else(PoisonError::into_inner);
+        let result = if state.connected {
+            lane.session_restored(session, &state.reason, times)
+        } else {
+            lane.session_lost(session, &state.reason, times)
+        };
+        result
             .map(|_| ())
             .map_err(|err| Refusal::new(err.to_string()))
     }

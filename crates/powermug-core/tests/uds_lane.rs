@@ -10,7 +10,7 @@ use powermug_contract::peer::ExpectedPeer;
 use powermug_contract::proto::v1 as pb;
 use powermug_contract::server::serve_instance;
 use powermug_contract::service::CoreConfig;
-use powermug_core::{Clock, Lane, LaneSink, PointSpec, PointTable};
+use powermug_core::{Clock, Lane, LaneSink, PointSpec, PointTable, SessionId};
 use powermug_pivot::proto::v1 as pv;
 use powermug_pivot::{PointIndex, Value};
 use powermug_store::{EventClass, TelemetryLog};
@@ -31,7 +31,7 @@ fn point(point_id: &str, class: EventClass) -> PointSpec {
         site_id: "S3".into(),
         point_id: point_id.into(),
         class,
-        session: None,
+        session: Some(SessionId(1)),
         supervision: None,
     }
 }
@@ -269,6 +269,69 @@ async fn replayed_event_is_rejected_and_the_image_keeps_the_first_value() {
         assert_eq!(
             lane.image().get(PointIndex(0)).map(|s| s.value),
             Some(Value::Int(1))
+        );
+    });
+    setup.shutdown().await;
+}
+
+#[tokio::test]
+async fn lost_session_is_journaled_and_degrades_the_image_until_restored() {
+    let setup = setup();
+    let channel = client::connect(&setup.socket).await.expect("connects");
+    client::describe_capabilities(channel.clone(), capabilities())
+        .await
+        .expect("accepted");
+    client::stream_events(
+        channel.clone(),
+        vec![batch(1, vec![envelope("S3/TM_001", 1, int(5))])],
+        64,
+    )
+    .await
+    .expect("value");
+
+    client::report_communication(
+        channel.clone(),
+        pv::CommunicationState {
+            site_id: "S3".into(),
+            session_id: "1".into(),
+            connected: false,
+            reason: "keepalive timeout".into(),
+        },
+    )
+    .await
+    .expect("loss committed");
+
+    read(&setup.lane, |lane| {
+        // One value, one state row, one quality row for the point with a value.
+        assert_eq!(lane.log().last_seq().expect("last"), Some(3));
+        assert_eq!(
+            lane.image().get(PointIndex(0)).map(|s| s.quality),
+            Some(powermug_pivot::Quality::new(
+                powermug_pivot::Validity::Invalid
+            ))
+        );
+    });
+
+    client::report_communication(
+        channel,
+        pv::CommunicationState {
+            site_id: "S3".into(),
+            session_id: "1".into(),
+            connected: true,
+            reason: "link up".into(),
+        },
+    )
+    .await
+    .expect("restore committed");
+
+    read(&setup.lane, |lane| {
+        assert_eq!(lane.log().last_seq().expect("last"), Some(4));
+        // Restored, but still degraded until a fresh value.
+        assert_eq!(
+            lane.image().get(PointIndex(0)).map(|s| s.quality),
+            Some(powermug_pivot::Quality::new(
+                powermug_pivot::Validity::Invalid
+            ))
         );
     });
     setup.shutdown().await;

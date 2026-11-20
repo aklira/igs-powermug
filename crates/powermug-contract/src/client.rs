@@ -18,8 +18,9 @@ use tower::service_fn;
 use crate::credit::{CreditError, CreditWindow};
 use crate::proto::v1::{
     adapter_control_client::AdapterControlClient, adapter_data_client::AdapterDataClient, AckBatch,
-    Capabilities, EventBatch, HandshakeResponse,
+    Capabilities, CommunicationAck, EventBatch, HandshakeResponse,
 };
+use powermug_pivot::proto::v1::CommunicationState;
 
 /// The adapter could not complete a call.
 #[derive(Debug, Error)]
@@ -64,6 +65,22 @@ pub async fn describe_capabilities(
 ) -> Result<HandshakeResponse, ClientError> {
     let response = AdapterControlClient::new(channel)
         .describe_capabilities(capabilities)
+        .await?;
+    Ok(response.into_inner())
+}
+
+/// Reports that a session was lost or is back. Returns once the core has
+/// committed the change.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Status`] when the core refuses the change.
+pub async fn report_communication(
+    channel: Channel,
+    state: CommunicationState,
+) -> Result<CommunicationAck, ClientError> {
+    let response = AdapterDataClient::new(channel)
+        .report_communication(state)
         .await?;
     Ok(response.into_inner())
 }

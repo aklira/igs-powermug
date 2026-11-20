@@ -5,6 +5,7 @@
 //! `DURABLE` only then.
 
 use crate::proto::v1::EventBatch;
+use powermug_pivot::proto::v1::CommunicationState;
 
 /// The batch was not accepted. The reason is bounded text sent to the adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,4 +31,12 @@ pub trait BatchSink: Send {
     /// Returns a [`Refusal`] when the batch cannot be committed; nothing of the
     /// batch is then visible to the core.
     fn commit(&mut self, batch: &EventBatch) -> Result<(), Refusal>;
+
+    /// Records that a session was lost or is back. Returns `Ok` only when the
+    /// change is committed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Refusal`] when the change cannot be committed.
+    fn communication(&mut self, state: &CommunicationState) -> Result<(), Refusal>;
 }

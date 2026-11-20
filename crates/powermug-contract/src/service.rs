@@ -22,9 +22,10 @@ use crate::handshake::{self, Offer, API_VERSION};
 use crate::peer::{self, ExpectedPeer, PeerCredentials};
 use crate::proto::v1::{
     adapter_control_server::AdapterControl, adapter_data_server::AdapterData, AckBatch, AckStatus,
-    Capabilities, EventBatch, HandshakeResponse,
+    Capabilities, CommunicationAck, EventBatch, HandshakeResponse,
 };
 use crate::sink::{BatchSink, Refusal};
+use powermug_pivot::proto::v1::CommunicationState;
 
 /// What the core requires of the instance it spawned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +149,21 @@ fn commit(sink: &Mutex<Box<dyn BatchSink>>, batch: &EventBatch) -> Result<(), Re
 #[tonic::async_trait]
 impl AdapterData for CoreService {
     type StreamEventsStream = ReceiverStream<Result<AckBatch, Status>>;
+
+    async fn report_communication(
+        &self,
+        request: Request<CommunicationState>,
+    ) -> Result<Response<CommunicationAck>, Status> {
+        authenticate(&request, self.config.expected_peer)?;
+        self.accepted().ok_or_else(|| {
+            Status::failed_precondition("no accepted handshake for this instance")
+        })?;
+        let state = request.into_inner();
+        let mut sink = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
+        sink.communication(&state)
+            .map_err(|refusal| Status::invalid_argument(refusal.reason))?;
+        Ok(Response::new(CommunicationAck {}))
+    }
 
     async fn stream_events(
         &self,

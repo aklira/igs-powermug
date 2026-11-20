@@ -127,7 +127,13 @@ service AdapterControl {
   rpc DescribeCapabilities(Capabilities) returns (HandshakeResponse);
 }
 
+// Answer to a ReportCommunication call. Returned only once the change is
+// committed to the journal, so it is the durable acknowledgement of the change.
+message CommunicationAck {}
+
 service AdapterData {
   // South: events from the adapter, acknowledgements from the core.
   rpc StreamEvents(stream EventBatch) returns (stream AckBatch);
+  // South: a session was lost or is back. The core answers once it is committed.
+  rpc ReportCommunication(powermug.pivot.v1.CommunicationState) returns (CommunicationAck);
 }
