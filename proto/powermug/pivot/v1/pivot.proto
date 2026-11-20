@@ -1,0 +1,103 @@
+// Pivot data model, package powermug.pivot.v1 (SPECIFICATIONS §5, FUN-PIV-001).
+//
+// Status: first subset. The envelope, the value and the quality are defined.
+// The event families of [GW] §9.1 (StatusEvent, AnalogMeasurement, ...) are
+// not defined yet. Field numbers are never reused (PM-PIV-002).
+
+syntax = "proto3";
+
+package powermug.pivot.v1;
+
+// Validity of a value (SPECIFICATIONS §5.2). Zero is refused by the core:
+// a producer must always state the validity.
+enum Validity {
+  VALIDITY_UNSPECIFIED = 0;
+  VALIDITY_GOOD = 1;
+  VALIDITY_INVALID = 2;
+  VALIDITY_QUESTIONABLE = 3;
+}
+
+// Members of the detail set of the quality.
+enum Detail {
+  DETAIL_UNSPECIFIED = 0;
+  DETAIL_OVERFLOW = 1;
+  DETAIL_OUT_OF_RANGE = 2;
+  DETAIL_BAD_REFERENCE = 3;
+  DETAIL_OSCILLATORY = 4;
+  DETAIL_FAILURE = 5;
+  DETAIL_OLD_DATA = 6;
+  DETAIL_INCONSISTENT = 7;
+  DETAIL_INACCURATE = 8;
+}
+
+// Source of a value: measured by the process, or entered by an operator or a
+// substitution.
+enum Source {
+  SOURCE_UNSPECIFIED = 0;
+  SOURCE_PROCESS = 1;
+  SOURCE_SUBSTITUTED = 2;
+}
+
+// Normalized quality (SPECIFICATIONS §5.2).
+message Quality {
+  Validity validity = 1;
+  // Set semantics: a detail appears at most once.
+  repeated Detail details = 2;
+  Source source = 3;
+  bool test = 4;
+  bool operator_blocked = 5;
+  // Powermug extension: the producing processor is disabled (§8.6).
+  bool disabled = 6;
+}
+
+// Bitstring of at most 64 bits (FUN-PIV-002).
+message Bits {
+  uint64 value = 1;
+  // Number of significant bits, 0 to 64. Bits above `len` must be zero.
+  uint32 len = 2;
+}
+
+// Value of a point (FUN-PIV-002). Exactly one case must be set.
+message Value {
+  oneof kind {
+    bool bool_value = 1;
+    int64 int_value = 2;
+    uint64 uint_value = 3;
+    double double_value = 4;
+    // Enumeration value; the label mapping is declared in the revision.
+    uint32 enum_value = 5;
+    Bits bits_value = 6;
+    // Bounded text, at most 256 bytes. Not representable on the hot path.
+    string text_value = 7;
+  }
+}
+
+// Common envelope of a point event (SPECIFICATIONS §5.1, [GW] §9.2).
+message Envelope {
+  // UUIDv7, 16 bytes, assigned by the core before DURABLE acknowledgement.
+  bytes event_id = 1;
+  // Constrained string.
+  string site_id = 2;
+  // Prefixed by site_id, for example "S3/TM_001".
+  string point_id = 3;
+  Value value = 4;
+  Quality quality = 5;
+  // Nanoseconds since the Unix epoch.
+  int64 source_time_ns = 6;
+  int64 receive_time_ns = 7;
+  int64 process_time_ns = 8;
+  // Identifier of the partition revision that mapped the point.
+  string mapping_revision = 9;
+  // Configuration generation hash (§10.2).
+  string config_revision = 10;
+  // Steps applied to the value, "step@revision", at most 16 entries.
+  repeated string provenance = 11;
+  string origin_gateway_id = 12;
+  uint32 hop_count = 13;
+  // Canonical unit.
+  string unit = 14;
+  // Generation of the source session.
+  uint64 source_epoch = 15;
+  // True for replayed events, false for live ones.
+  bool replay = 16;
+}
