@@ -6,12 +6,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cycle;
 pub mod decode;
 pub mod image;
 pub mod lane;
 pub mod sink;
 pub mod supervisor;
 
+pub use cycle::{CycleState, CycleSupervisor, Expired, Supervision};
 pub use image::{OutOfRange, ProcessImage, Slot};
 pub use lane::{DuplicatePointId, Lane, LaneError, PointSpec, PointTable};
 pub use sink::LaneSink;
