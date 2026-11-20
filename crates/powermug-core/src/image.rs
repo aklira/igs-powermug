@@ -4,7 +4,7 @@
 //! The image is written only by a [`crate::lane::Lane`], after the batch that
 //! carries the value is committed (PM-TEL-001). Nothing else can change it.
 
-use powermug_pivot::{PointEvent, PointIndex, Quality, Value};
+use powermug_pivot::{PointEvent, PointIndex, Quality, Validity, Value};
 use thiserror::Error;
 
 /// Last known state of one point.
@@ -41,6 +41,14 @@ impl ProcessImage {
     #[must_use]
     pub fn get(&self, point: PointIndex) -> Option<&Slot> {
         self.slots.get(point.0 as usize).and_then(Option::as_ref)
+    }
+
+    /// Marks every value as invalid: after a restart, nothing is valid until a
+    /// South resynchronization (PM-TEL-003). The values are kept.
+    pub(crate) fn degrade_all(&mut self) {
+        for slot in self.slots.iter_mut().flatten() {
+            slot.quality = Quality::new(Validity::Invalid);
+        }
     }
 
     /// Replaces the slot of the event's point. Only the lane calls this.

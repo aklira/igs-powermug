@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::clock::Times;
 use crate::cycle::{CycleSupervisor, Expired, Supervision};
+use crate::decode::point_event;
 use crate::image::{OutOfRange as ImageOutOfRange, ProcessImage};
 
 /// A South session of a partition, as numbered by the revision.
@@ -134,6 +135,8 @@ pub enum LaneError {
     UnknownPoint(u32),
     #[error("no point of the table is attached to session {0}")]
     UnknownSession(u32),
+    #[error("journal record {seq} cannot be replayed: {reason}")]
+    Replay { seq: i64, reason: String },
     #[error("point index {0} was reported stale but has no value in the image")]
     StaleWithoutValue(u32),
     #[error(transparent)]
@@ -207,6 +210,74 @@ impl Lane {
             supervisor,
             lost: HashSet::new(),
         }
+    }
+
+    /// Opens a lane over `log`, rebuilding the image from the journal.
+    ///
+    /// Every replayed point is then degraded and suspended: nothing is valid
+    /// until a South resynchronization gives a fresh value (PM-TEL-003,
+    /// FUN-IMG-004). Class C points are not journaled, so they have no value
+    /// until then.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LaneError::Replay`] for a journal record that does not decode
+    /// against the table, and [`LaneError::Store`] when the journal cannot be
+    /// read.
+    pub fn open(table: PointTable, log: TelemetryLog, now_ns: u64) -> Result<Self, LaneError> {
+        let mut lane = Self::new(table, log, now_ns);
+        lane.replay()?;
+        lane.image.degrade_all();
+        let suspended: Vec<PointIndex> = lane
+            .table
+            .iter()
+            .filter(|(index, _)| lane.image.get(*index).is_some())
+            .map(|(index, _)| index)
+            .collect();
+        for index in suspended {
+            lane.supervisor.suspend(index)?;
+        }
+        Ok(lane)
+    }
+
+    /// Applies every journaled point event, in sequence order.
+    fn replay(&mut self) -> Result<(), LaneError> {
+        const PAGE: u32 = 1_000;
+        let mut next = 1;
+        loop {
+            let rows = self.log.read_from(next, PAGE)?;
+            for row in &rows {
+                // Session events concern no point and do not change the image.
+                let Some(_) = row.point else {
+                    continue;
+                };
+                let event = self.replay_event(row.seq, &row.payload)?;
+                self.image.apply(&event)?;
+            }
+            let Some(last) = rows.last() else {
+                return Ok(());
+            };
+            if rows.len() < PAGE as usize {
+                return Ok(());
+            }
+            next = last.seq + 1;
+        }
+    }
+
+    /// Decodes one journaled point event, keeping the revision it was mapped with.
+    fn replay_event(&self, seq: i64, payload: &[u8]) -> Result<PointEvent, LaneError> {
+        let replay = |reason: String| LaneError::Replay { seq, reason };
+        let envelope = pb::Envelope::decode(payload).map_err(|err| replay(err.to_string()))?;
+        let revision = envelope.mapping_revision.parse::<u32>().map_err(|_| {
+            replay(format!(
+                "mapping revision {} is not a number",
+                envelope.mapping_revision
+            ))
+        })?;
+        let mut event = point_event(&envelope, &self.table, envelope.process_time_ns)
+            .map_err(|err| replay(err.to_string()))?;
+        event.revision_index = revision;
+        Ok(event)
     }
 
     #[must_use]
