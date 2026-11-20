@@ -12,6 +12,7 @@ fn spec(point_id: &str, class: EventClass) -> PointSpec {
         site_id: "S3".into(),
         point_id: point_id.into(),
         class,
+        session: None,
         supervision: None,
     }
 }

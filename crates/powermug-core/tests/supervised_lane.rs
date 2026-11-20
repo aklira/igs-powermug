@@ -19,6 +19,7 @@ fn supervised(point_id: &str, class: EventClass) -> PointSpec {
         site_id: "S3".into(),
         point_id: point_id.into(),
         class,
+        session: None,
         supervision: Some(Supervision {
             period: Duration::from_secs(1),
             grace: Duration::ZERO,

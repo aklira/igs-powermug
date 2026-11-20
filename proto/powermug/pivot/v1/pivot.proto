@@ -80,6 +80,17 @@ message Cause {
   string native = 2;
 }
 
+// Connection state of a South session (SPECIFICATIONS §7.6, [GW] §9.1). Not
+// a point event: it is journaled without a point.
+message CommunicationState {
+  string site_id = 1;
+  string session_id = 2;
+  // False when the session is lost, true when it is back.
+  bool connected = 3;
+  // Bounded text: the protocol condition that caused the change.
+  string reason = 4;
+}
+
 // Common envelope of a point event (SPECIFICATIONS §5.1, [GW] §9.2).
 message Envelope {
   // UUIDv7, 16 bytes, assigned by the core before DURABLE acknowledgement.

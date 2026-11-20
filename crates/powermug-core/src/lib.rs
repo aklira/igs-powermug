@@ -17,6 +17,6 @@ pub mod supervisor;
 pub use clock::{Clock, Times};
 pub use cycle::{CycleState, CycleSupervisor, Expired, Supervision};
 pub use image::{OutOfRange, ProcessImage, Slot};
-pub use lane::{DuplicatePointId, Lane, LaneError, PointSpec, PointTable};
+pub use lane::{DuplicatePointId, Lane, LaneError, PointSpec, PointTable, SessionId};
 pub use sink::LaneSink;
 pub use supervisor::{Decision, Policy, Refusal, State, Supervisor};

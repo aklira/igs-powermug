@@ -1536,6 +1536,7 @@ The ADR texts live in `docs/adr/`, one file each, using the template of [GW] Lot
 | Q8 | Hardware references for edge (ARM64) and concentrator (x86_64) | To choose in phase 0 of IMPLEMENTATION.md |
 | Q9 | RPC names of the adapter contract. §6.1 uses `Handshake`, `SubmitCommands`, `ExecuteCommands`, `ReadImage`; [GW] §8.2 uses `DescribeCapabilities`, `OpenSession`, `ExecuteCommand`, `InterrogateState` | Follow [GW] §8.2 names; `powermug.adapter.v1` defines `DescribeCapabilities` and `StreamEvents` first; the other names are aligned when their RPCs are added |
 | Q10 | Pivot version accepted at handshake: exact `major.minor` match, or same major with a minor rule ([GW] §9.3) | Exact match in v1, the stricter choice; revisit when the first minor pivot version exists |
+| Q11 | Quality of points under a lost session, and class of the `CommunicationState` event. [GW] §10.7 gives the principle, not the normalized value or the class | Quality `invalid`, as IEC 104 `IV`; class A for the state event; both to confirm with the gateway owners |
 
 ---
 

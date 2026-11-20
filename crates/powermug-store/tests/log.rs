@@ -5,7 +5,7 @@ use powermug_store::{Committed, EventClass, NewEvent, StoreError, TelemetryLog};
 fn event(id: u8, class: EventClass) -> NewEvent<'static> {
     NewEvent {
         partition: "S3",
-        point: u32::from(id),
+        point: Some(u32::from(id)),
         class,
         event_id: [id; 16],
         revision: 7,

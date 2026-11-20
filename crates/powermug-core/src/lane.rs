@@ -9,8 +9,12 @@
 //!
 //! If step 3 fails, the expiries of step 2 are undone, so that no point is
 //! reported stale without its event in the log.
+//!
+//! A session lost (§7.6) is journaled as one `CommunicationState` and one
+//! quality event per point with a value; the points are then suspended, so no
+//! stale event is written for them until a fresh value arrives.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use powermug_pivot::proto::v1 as pb;
 use powermug_pivot::{Detail, EventId, PointEvent, PointIndex, Quality, Validity};
@@ -23,6 +27,10 @@ use crate::clock::Times;
 use crate::cycle::{CycleSupervisor, Expired, Supervision};
 use crate::image::{OutOfRange as ImageOutOfRange, ProcessImage};
 
+/// A South session of a partition, as numbered by the revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(pub u32);
+
 /// Static description of a point, interned at activation (PM-PIV-001).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointSpec {
@@ -30,6 +38,8 @@ pub struct PointSpec {
     /// Canonical identity, prefixed by `site_id`, for example `S3/TM_001`.
     pub point_id: String,
     pub class: EventClass,
+    /// The session the point is attached to, if any.
+    pub session: Option<SessionId>,
     /// Cycle supervision of the point, if any (§7.8).
     pub supervision: Option<Supervision>,
 }
@@ -122,6 +132,8 @@ impl PointTable {
 pub enum LaneError {
     #[error("point index {0} is not in the point table; the batch was refused")]
     UnknownPoint(u32),
+    #[error("no point of the table is attached to session {0}")]
+    UnknownSession(u32),
     #[error("point index {0} was reported stale but has no value in the image")]
     StaleWithoutValue(u32),
     #[error(transparent)]
@@ -132,14 +144,48 @@ pub enum LaneError {
     Supervision(#[from] crate::cycle::OutOfRange),
 }
 
-/// The ingestion path of one lane: its points, its image, its journal and the
-/// cycle supervision of its points.
+/// Why a point event was produced. It sets the cause and the provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Acquired,
+    Stale,
+    CommunicationLoss,
+}
+
+/// One item of a journal transaction.
+enum Journaled {
+    Point {
+        event: PointEvent,
+        origin: Origin,
+    },
+    Session {
+        site_id: String,
+        message: pb::CommunicationState,
+        event_id: EventId,
+        wall_ns: i64,
+    },
+}
+
+/// A journal row, encoded and ready for the store.
+struct Encoded {
+    partition: String,
+    point: Option<u32>,
+    class: EventClass,
+    event_id: [u8; 16],
+    revision: u32,
+    ts_receive_ns: i64,
+    payload: Vec<u8>,
+}
+
+/// The ingestion path of one lane: its points, its image, its journal, the
+/// cycle supervision of its points and the sessions currently lost.
 #[derive(Debug)]
 pub struct Lane {
     table: PointTable,
     image: ProcessImage,
     log: TelemetryLog,
     supervisor: CycleSupervisor,
+    lost: HashSet<SessionId>,
 }
 
 impl Lane {
@@ -159,6 +205,7 @@ impl Lane {
             image,
             log,
             supervisor,
+            lost: HashSet::new(),
         }
     }
 
@@ -175,6 +222,18 @@ impl Lane {
     #[must_use]
     pub fn log(&self) -> &TelemetryLog {
         &self.log
+    }
+
+    /// The cycle state of `point`, for tests and diagnostics.
+    #[must_use]
+    pub fn supervisor_state(&self, point: PointIndex) -> Option<crate::cycle::CycleState> {
+        self.supervisor.state(point)
+    }
+
+    /// Whether `session` is currently lost.
+    #[must_use]
+    pub fn is_lost(&self, session: SessionId) -> bool {
+        self.lost.contains(&session)
     }
 
     /// Ingests a batch at `times`. Returns the commit of the journaled events,
@@ -206,12 +265,18 @@ impl Lane {
             }
         };
 
-        let ordered: Vec<(PointEvent, bool)> = stale
-            .iter()
-            .map(|event| (*event, true))
-            .chain(events.iter().map(|event| (*event, false)))
+        let entries: Vec<Journaled> = stale
+            .into_iter()
+            .map(|event| Journaled::Point {
+                event,
+                origin: Origin::Stale,
+            })
+            .chain(events.iter().map(|event| Journaled::Point {
+                event: *event,
+                origin: Origin::Acquired,
+            }))
             .collect();
-        let committed = match self.append(&ordered) {
+        let committed = match self.append(&entries) {
             Ok(committed) => committed,
             Err(err) => {
                 self.supervisor.revert(&expired);
@@ -219,19 +284,125 @@ impl Lane {
             }
         };
 
-        for (event, is_stale) in &ordered {
-            self.image.apply(event)?;
-            if !is_stale {
-                self.supervisor.accepted(event.point, times.monotonic_ns)?;
+        for entry in &entries {
+            if let Journaled::Point { event, origin } = entry {
+                self.image.apply(event)?;
+                if *origin == Origin::Acquired {
+                    self.supervisor.accepted(event.point, times.monotonic_ns)?;
+                }
             }
         }
         Ok(committed)
     }
 
-    /// The cycle state of `point`, for tests and diagnostics.
-    #[must_use]
-    pub fn supervisor_state(&self, point: PointIndex) -> Option<crate::cycle::CycleState> {
-        self.supervisor.state(point)
+    /// Records that `session` is lost. Every point of the session with a value
+    /// gets a quality event (invalid), and the points are suspended. A session
+    /// already lost is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LaneError::UnknownSession`] when no point is attached to the
+    /// session, and [`LaneError::Store`] when the journal refuses the events; the
+    /// image and the supervision are then unchanged.
+    pub fn session_lost(
+        &mut self,
+        session: SessionId,
+        reason: &str,
+        times: Times,
+    ) -> Result<Option<Committed>, LaneError> {
+        if self.lost.contains(&session) {
+            return Ok(None);
+        }
+        let site_id = self.site_of(session)?;
+        let attached: Vec<PointIndex> = self
+            .table
+            .iter()
+            .filter(|(_, spec)| spec.session == Some(session))
+            .map(|(index, _)| index)
+            .collect();
+
+        let mut entries = vec![Journaled::Session {
+            site_id: site_id.clone(),
+            message: pb::CommunicationState {
+                site_id,
+                session_id: session.0.to_string(),
+                connected: false,
+                reason: reason.to_owned(),
+            },
+            event_id: new_event_id(),
+            wall_ns: times.wall_ns,
+        }];
+        for index in &attached {
+            if let Some(slot) = self.image.get(*index) {
+                entries.push(Journaled::Point {
+                    event: PointEvent {
+                        point: *index,
+                        value: slot.value,
+                        quality: Quality::new(Validity::Invalid),
+                        source_time_ns: slot.source_time_ns,
+                        receive_time_ns: slot.receive_time_ns,
+                        process_time_ns: times.wall_ns,
+                        event_id: new_event_id(),
+                        revision_index: self.table.revision_index(),
+                    },
+                    origin: Origin::CommunicationLoss,
+                });
+            }
+        }
+
+        let committed = self.append(&entries)?;
+        for entry in &entries {
+            if let Journaled::Point { event, .. } = entry {
+                self.image.apply(event)?;
+            }
+        }
+        for index in attached {
+            self.supervisor.suspend(index)?;
+        }
+        self.lost.insert(session);
+        Ok(committed)
+    }
+
+    /// Records that `session` is back. Its points stay degraded until a fresh
+    /// value arrives. A session that is not lost is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LaneError::UnknownSession`] or [`LaneError::Store`] as for
+    /// [`Lane::session_lost`].
+    pub fn session_restored(
+        &mut self,
+        session: SessionId,
+        reason: &str,
+        times: Times,
+    ) -> Result<Option<Committed>, LaneError> {
+        if !self.lost.contains(&session) {
+            return Ok(None);
+        }
+        let site_id = self.site_of(session)?;
+        let entries = vec![Journaled::Session {
+            site_id: site_id.clone(),
+            message: pb::CommunicationState {
+                site_id,
+                session_id: session.0.to_string(),
+                connected: true,
+                reason: reason.to_owned(),
+            },
+            event_id: new_event_id(),
+            wall_ns: times.wall_ns,
+        }];
+        let committed = self.append(&entries)?;
+        self.lost.remove(&session);
+        Ok(committed)
+    }
+
+    /// The site of the points attached to `session`.
+    fn site_of(&self, session: SessionId) -> Result<String, LaneError> {
+        self.table
+            .iter()
+            .find(|(_, spec)| spec.session == Some(session))
+            .map(|(_, spec)| spec.site_id.clone())
+            .ok_or(LaneError::UnknownSession(session.0))
     }
 
     /// One stale event per expired point, from the value the image holds.
@@ -261,64 +432,88 @@ impl Lane {
             .collect()
     }
 
-    /// Journals the events that are not class C, in one transaction.
-    fn append(&mut self, ordered: &[(PointEvent, bool)]) -> Result<Option<Committed>, LaneError> {
-        let mut payloads: Vec<Option<(Vec<u8>, &str, EventClass)>> =
-            Vec::with_capacity(ordered.len());
-        for (event, is_stale) in ordered {
-            let spec = self
-                .table
-                .get(event.point)
-                .ok_or(LaneError::UnknownPoint(event.point.0))?;
-            let payload = (spec.class != EventClass::C).then(|| {
-                envelope(
-                    event,
-                    &spec.site_id,
-                    &spec.point_id,
-                    *is_stale,
-                    self.table.revision_index(),
-                )
-                .encode_to_vec()
-            });
-            payloads.push(payload.map(|bytes| (bytes, spec.site_id.as_str(), spec.class)));
+    /// Journals the items that are not class C, in one transaction.
+    fn append(&mut self, entries: &[Journaled]) -> Result<Option<Committed>, LaneError> {
+        let mut encoded = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match entry {
+                Journaled::Point { event, origin } => {
+                    let spec = self
+                        .table
+                        .get(event.point)
+                        .ok_or(LaneError::UnknownPoint(event.point.0))?;
+                    if spec.class == EventClass::C {
+                        continue;
+                    }
+                    let payload = envelope(
+                        event,
+                        &spec.site_id,
+                        &spec.point_id,
+                        *origin,
+                        self.table.revision_index(),
+                    )
+                    .encode_to_vec();
+                    encoded.push(Encoded {
+                        partition: spec.site_id.clone(),
+                        point: Some(event.point.0),
+                        class: spec.class,
+                        event_id: *event.event_id.as_bytes(),
+                        revision: event.revision_index,
+                        ts_receive_ns: event.receive_time_ns,
+                        payload,
+                    });
+                }
+                Journaled::Session {
+                    site_id,
+                    message,
+                    event_id,
+                    wall_ns,
+                } => {
+                    encoded.push(Encoded {
+                        partition: site_id.clone(),
+                        point: None,
+                        class: EventClass::A,
+                        event_id: *event_id.as_bytes(),
+                        revision: self.table.revision_index(),
+                        ts_receive_ns: *wall_ns,
+                        payload: message.encode_to_vec(),
+                    });
+                }
+            }
         }
 
-        let records: Vec<NewEvent<'_>> = ordered
+        let records: Vec<NewEvent<'_>> = encoded
             .iter()
-            .zip(&payloads)
-            .filter_map(|((event, _), payload)| {
-                payload.as_ref().map(|(bytes, site, class)| NewEvent {
-                    partition: site,
-                    point: event.point.0,
-                    class: *class,
-                    event_id: *event.event_id.as_bytes(),
-                    revision: event.revision_index,
-                    ts_receive_ns: event.receive_time_ns,
-                    payload: bytes,
-                })
+            .map(|row| NewEvent {
+                partition: row.partition.as_str(),
+                point: row.point,
+                class: row.class,
+                event_id: row.event_id,
+                revision: row.revision,
+                ts_receive_ns: row.ts_receive_ns,
+                payload: row.payload.as_slice(),
             })
             .collect();
-
         Ok(self.log.append(&records)?)
     }
 }
 
-/// A new `UUIDv7` for a stale event. The core assigns event ids (§5.1).
+/// A new `UUIDv7`. The core assigns event ids (§5.1).
 fn new_event_id() -> EventId {
     EventId::from_bytes(*Uuid::now_v7().as_bytes())
         .expect("uuid crate produces UUIDv7 with the RFC 9562 variant")
 }
 
-/// Encodes one event as the journal record: a pivot `Envelope`.
+/// Encodes one point event as the journal record: a pivot `Envelope`.
 ///
-/// A stale event carries its provenance and its cause. The other fields the
-/// lane cannot know yet (unit, config revision, source epoch, origin gateway,
-/// replay) keep their empty values.
+/// Stale events carry their provenance and cause; communication-loss events
+/// carry their cause. The other fields the lane cannot know yet (unit, config
+/// revision, source epoch, origin gateway, replay) keep their empty values.
 fn envelope(
     event: &PointEvent,
     site_id: &str,
     point_id: &str,
-    is_stale: bool,
+    origin: Origin,
     revision: u32,
 ) -> pb::Envelope {
     let mut envelope = pb::Envelope {
@@ -333,12 +528,21 @@ fn envelope(
         mapping_revision: event.revision_index.to_string(),
         ..Default::default()
     };
-    if is_stale {
-        envelope.provenance = vec![format!("cycle_check@{revision}")];
-        envelope.cause = Some(pb::Cause {
-            normalized: "supervision".to_owned(),
-            native: String::new(),
-        });
+    match origin {
+        Origin::Acquired => {}
+        Origin::Stale => {
+            envelope.provenance = vec![format!("cycle_check@{revision}")];
+            envelope.cause = Some(pb::Cause {
+                normalized: "supervision".to_owned(),
+                native: String::new(),
+            });
+        }
+        Origin::CommunicationLoss => {
+            envelope.cause = Some(pb::Cause {
+                normalized: "communication_loss".to_owned(),
+                native: String::new(),
+            });
+        }
     }
     envelope
 }

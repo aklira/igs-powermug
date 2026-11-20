@@ -44,7 +44,8 @@ impl EventClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NewEvent<'a> {
     pub partition: &'a str,
-    pub point: u32,
+    /// `None` for an event that concerns a session, not a point.
+    pub point: Option<u32>,
     pub class: EventClass,
     pub event_id: [u8; 16],
     pub revision: u32,
@@ -58,7 +59,7 @@ pub struct NewEvent<'a> {
 pub struct StoredEvent {
     pub seq: i64,
     pub partition: String,
-    pub point: u32,
+    pub point: Option<u32>,
     pub class: EventClass,
     pub event_id: [u8; 16],
     pub revision: u32,
@@ -93,7 +94,7 @@ const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS events (
     seq         INTEGER PRIMARY KEY,
     partition   TEXT    NOT NULL,
-    point       INTEGER NOT NULL,
+    point       INTEGER,
     class       INTEGER NOT NULL,
     event_id    BLOB    NOT NULL UNIQUE CHECK (length(event_id) = 16),
     revision    INTEGER NOT NULL,
@@ -161,7 +162,7 @@ impl TelemetryLog {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
+                row.get::<_, Option<i64>>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, Vec<u8>>(4)?,
                 row.get::<_, i64>(5)?,
@@ -177,7 +178,7 @@ impl TelemetryLog {
             events.push(StoredEvent {
                 seq,
                 partition,
-                point: u32::try_from(point).unwrap_or(u32::MAX),
+                point: point.map(|point| u32::try_from(point).unwrap_or(u32::MAX)),
                 class,
                 event_id: event_id.try_into().unwrap_or([0; 16]),
                 revision: u32::try_from(revision).unwrap_or(u32::MAX),
@@ -215,7 +216,7 @@ fn insert_all(tx: &Transaction<'_>, batch: &[NewEvent<'_>]) -> Result<Committed,
     for event in batch {
         let inserted = statement.execute(params![
             event.partition,
-            i64::from(event.point),
+            event.point.map(i64::from),
             event.class.code(),
             event.event_id.as_slice(),
             i64::from(event.revision),
