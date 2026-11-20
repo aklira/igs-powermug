@@ -42,6 +42,24 @@ impl From<rusqlite::Error> for GenerationError {
     }
 }
 
+/// The active and previous revision of one scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeState {
+    pub scope: String,
+    pub active: Option<String>,
+    pub previous: Option<String>,
+}
+
+/// The status of one revision: its scope, its lifecycle state and its parent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevisionStatus {
+    pub id: String,
+    pub scope: String,
+    /// `PREPARED`, `ACTIVE`, `SUPERSEDED` or `ROLLED_BACK`.
+    pub state: String,
+    pub parent: Option<String>,
+}
+
 /// What a call changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -216,6 +234,48 @@ impl CriticalStore {
             )
             .optional()?
             .flatten())
+    }
+
+    /// The active and the previous revision of every scope that has one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationError::Database`] when the read fails.
+    pub fn scopes(&self) -> Result<Vec<ScopeState>, GenerationError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT scope, active, previous FROM generation ORDER BY scope")?;
+        let rows = statement.query_map([], |row| {
+            Ok(ScopeState {
+                scope: row.get(0)?,
+                active: row.get(1)?,
+                previous: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The scope, lifecycle state and parent of a revision, if it is known.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationError::Database`] when the read fails.
+    pub fn revision(&self, id: &str) -> Result<Option<RevisionStatus>, GenerationError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT scope, state, parent FROM revisions WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(RevisionStatus {
+                        id: id.to_owned(),
+                        scope: row.get(0)?,
+                        state: row.get(1)?,
+                        parent: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     fn revision_scope(&self, id: &str) -> Result<Option<String>, GenerationError> {

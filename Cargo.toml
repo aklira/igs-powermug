@@ -10,6 +10,7 @@ members = [
     "crates/powermug-store",
     "crates/powermug-adapter-iec104",
     "crates/powermug-bench",
+    "crates/powermug-mgmt",
 ]
 
 [workspace.package]

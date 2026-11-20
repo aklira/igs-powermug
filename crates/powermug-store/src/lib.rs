@@ -8,7 +8,7 @@ mod journal;
 mod log;
 mod writer;
 
-pub use generation::{CriticalStore, GenerationError, Outcome};
+pub use generation::{CriticalStore, GenerationError, Outcome, RevisionStatus, ScopeState};
 pub use journal::{Journal, OwnedEvent};
 pub use log::{Committed, EventClass, NewEvent, Snapshot, StoreError, StoredEvent, TelemetryLog};
 pub use writer::{GroupJournal, Writer, GROUP_MAX_EVENTS, GROUP_WINDOW};
