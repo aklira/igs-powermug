@@ -1,0 +1,16 @@
+# One image per release (SPECIFICATIONS 18.1). The build stage compiles the cell
+# binary; the runtime stage carries only that binary.
+#
+# The binary is linked against glibc here. A musl build is the target of 18.1 where
+# the C dependencies allow it; it is not set up yet.
+
+FROM docker.io/library/rust:1.89-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked -p powermug-cell
+
+FROM docker.io/library/debian:bookworm-slim
+COPY --from=build /src/target/release/powermug-cell /usr/bin/powermug-cell
+RUN mkdir -p /var/lib/powermug /etc/powermug
+ENTRYPOINT ["/usr/bin/powermug-cell"]
+CMD ["--config", "/etc/powermug/cell.json"]

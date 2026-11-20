@@ -1,0 +1,30 @@
+# One Quadlet unit per cell (SPECIFICATIONS 18.2). Host-specific values (image digest,
+# volumes, network, memory) come from the deployment profile (18.3).
+#
+# Not in this unit yet: the health command and the readiness notification of 18.2.
+# The cell binary has neither a `diag` command nor sd_notify.
+
+[Unit]
+Description=Powermug cell CELL_DC1
+After=network-online.target chronyd.service
+
+[Container]
+Image=localhost/powermug-cell:dev
+ContainerName=powermug-cell-dc1
+Exec=--config /etc/powermug/cell.json
+ReadOnly=true
+Volume=pm-dc1-critical:/var/lib/powermug/critical:Z
+Volume=pm-dc1-telemetry:/var/lib/powermug/telemetry:Z
+Volume=/etc/powermug/dc1/trust:/etc/powermug/trust:ro,Z
+Volume=/etc/powermug/dc1/secrets:/etc/powermug/secrets:ro,Z
+Network=host
+DropCapability=ALL
+PodmanArgs=--cgroupns=private --pids-limit=512 --memory=4g
+
+[Service]
+Delegate=yes
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

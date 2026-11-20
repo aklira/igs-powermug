@@ -1,0 +1,21 @@
+{
+  "cell": "CELL_DC1",
+  "telemetry_db": "/var/lib/powermug/telemetry/telemetry.db",
+  "critical_db": "/var/lib/powermug/critical/critical.db",
+  "management": {
+    "listen": "0.0.0.0:8443",
+    "certificate": "/etc/powermug/secrets/server.pem",
+    "key": "/etc/powermug/secrets/server.key",
+    "client_ca": "/etc/powermug/trust/client-ca.pem",
+    "trusted_key": "/etc/powermug/trust/plan-signing.pub.pem"
+  },
+  "lanes": [
+    {
+      "site": "S3",
+      "revision": 1,
+      "points": [
+        {"id": "S3/TM_001", "session": 1, "address": 101, "class": "A"}
+      ]
+    }
+  ]
+}
