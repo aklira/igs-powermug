@@ -1,0 +1,152 @@
+//! The cell: one process that opens the telemetry log, the critical store and one
+//! lane per partition, and serves the management API over mutual TLS.
+//!
+//! The telemetry log has a single writer for the whole cell (§7.2): every lane holds
+//! a handle onto it. The lanes are rebuilt from the journal at start (§7.2, PM-TEL-003),
+//! so that nothing is valid until a fresh value. The South adapters are not started by
+//! the cell yet: the lanes receive values only through the adapter contract.
+
+pub mod config;
+
+use std::future::Future;
+use std::sync::{Arc, Mutex};
+
+use powermug_core::lane::{Lane, LaneError, TableError};
+use powermug_core::{Clock, Indicator, IndicatorSource};
+use powermug_mgmt::{load_trusted_key, server_config, Api, KeyError, TlsError, TlsListener};
+use powermug_revision::profile::powermug_v1;
+use powermug_store::{CriticalStore, GenerationError, GroupJournal, StoreError, Writer};
+use thiserror::Error;
+use tokio::net::TcpListener;
+
+pub use config::{CellConfig, ConfigError};
+
+/// The cell could not start or run.
+#[derive(Debug, Error)]
+pub enum CellError {
+    #[error("cannot read {path}: {message}")]
+    File { path: String, message: String },
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Generation(#[from] GenerationError),
+    #[error(transparent)]
+    Table(#[from] TableError),
+    #[error(transparent)]
+    Lane(#[from] LaneError),
+    #[error(transparent)]
+    Key(#[from] KeyError),
+    #[error(transparent)]
+    Tls(#[from] TlsError),
+    #[error("cannot listen on the management address: {0}")]
+    Listen(String),
+}
+
+/// The indicators of the cell: those of every lane, measured together.
+#[derive(Debug)]
+pub struct CellIndicators {
+    lanes: Vec<Arc<Mutex<Lane>>>,
+}
+
+impl IndicatorSource for CellIndicators {
+    fn sample(&self, now_wall_ns: i64) -> Vec<Indicator> {
+        self.lanes
+            .iter()
+            .flat_map(|lane| lane.sample(now_wall_ns))
+            .collect()
+    }
+}
+
+/// The opened cell: its lanes, its management API, and the writer of its telemetry log.
+#[derive(Debug)]
+pub struct Cell {
+    pub api: Arc<Api>,
+    pub lanes: Vec<Arc<Mutex<Lane>>>,
+    writer: Writer,
+}
+
+impl Cell {
+    /// Opens the stores and the lanes of `config`, trusting `trusted_key` for signed plans.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CellError`] when a store cannot be opened, a lane cannot be rebuilt
+    /// from its journal, or the points do not form a table.
+    pub fn open(
+        config: &CellConfig,
+        trusted_key: ed25519_dalek::VerifyingKey,
+    ) -> Result<Self, CellError> {
+        let (journal, writer) = GroupJournal::spawn(&config.telemetry_db)?;
+        let clock = Clock::new();
+        let mut lanes = Vec::with_capacity(config.lanes.len());
+        for lane in &config.lanes {
+            let table = lane.table()?;
+            // The lane's monotonic clock starts at zero, as the clock that feeds it.
+            let opened = Lane::open(table, journal.clone(), clock.now().monotonic_ns)?;
+            lanes.push(Arc::new(Mutex::new(opened)));
+        }
+        drop(journal);
+        let critical = CriticalStore::open(&config.critical_db)?;
+        let indicators: Arc<dyn IndicatorSource> = Arc::new(CellIndicators {
+            lanes: lanes.clone(),
+        });
+        let api = Arc::new(Api::new(critical, powermug_v1(), trusted_key, indicators));
+        Ok(Self { api, lanes, writer })
+    }
+
+    /// Releases the lanes and waits for the telemetry writer to stop.
+    pub fn close(self) {
+        let Self { api, lanes, writer } = self;
+        drop(api);
+        drop(lanes);
+        writer.join();
+    }
+}
+
+/// Reads a file the configuration names.
+fn read(path: &std::path::Path) -> Result<Vec<u8>, CellError> {
+    std::fs::read(path).map_err(|err| CellError::File {
+        path: path.display().to_string(),
+        message: err.to_string(),
+    })
+}
+
+/// Opens the cell of `config` and serves its management API until `shutdown` completes.
+///
+/// # Errors
+///
+/// Returns [`CellError`] when the cell cannot be opened, the TLS material is unusable,
+/// or the management address cannot be bound.
+pub async fn serve(
+    config: CellConfig,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), CellError> {
+    let management = &config.management;
+    let tls = server_config(
+        &read(&management.certificate)?,
+        &read(&management.key)?,
+        &read(&management.client_ca)?,
+    )?;
+    let trusted_key = load_trusted_key(&management.trusted_key)?;
+    let cell = Cell::open(&config, trusted_key)?;
+
+    let listener = TcpListener::bind(management.listen)
+        .await
+        .map_err(|err| CellError::Listen(err.to_string()))?;
+    let address = listener
+        .local_addr()
+        .map_err(|err| CellError::Listen(err.to_string()))?;
+    println!(
+        "powermug-cell {}: management API on https://{address}",
+        config.cell
+    );
+
+    let app = powermug_mgmt::router(Arc::clone(&cell.api));
+    let served = axum::serve(TlsListener::new(listener, tls), app)
+        .with_graceful_shutdown(shutdown)
+        .await;
+    cell.close();
+    served.map_err(|err| CellError::Listen(err.to_string()))
+}

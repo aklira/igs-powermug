@@ -218,6 +218,8 @@ pub struct Lane {
     log: Box<dyn Journal>,
     supervisor: CycleSupervisor,
     lost: HashSet<SessionId>,
+    /// Sessions whose state an adapter has reported at least once.
+    reported: HashSet<SessionId>,
     last_snapshot_ns: u64,
     published: Vec<pb::Envelope>,
     last_accepted_wall_ns: Option<i64>,
@@ -244,6 +246,7 @@ impl Lane {
             log: Box::new(log),
             supervisor,
             lost: HashSet::new(),
+            reported: HashSet::new(),
             last_snapshot_ns: now_ns,
             published: Vec::new(),
             last_accepted_wall_ns: None,
@@ -514,6 +517,7 @@ impl Lane {
             self.supervisor.suspend(index)?;
         }
         self.lost.insert(session);
+        self.reported.insert(session);
         Ok(committed)
     }
 
@@ -531,6 +535,7 @@ impl Lane {
         times: Times,
     ) -> Result<Option<Committed>, LaneError> {
         if !self.lost.contains(&session) {
+            self.reported.insert(session);
             return Ok(None);
         }
         let site_id = self.site_of(session)?;
@@ -547,6 +552,7 @@ impl Lane {
         }];
         let committed = self.append(&entries)?;
         self.lost.remove(&session);
+        self.reported.insert(session);
         Ok(committed)
     }
 
@@ -558,7 +564,7 @@ impl Lane {
 
     /// The sessions of the table, each with whether it is up (not lost).
     #[must_use]
-    pub fn session_states(&self) -> Vec<(SessionId, bool)> {
+    pub fn session_states(&self) -> Vec<(SessionId, Option<bool>)> {
         let mut sessions: Vec<SessionId> = self
             .table
             .iter()
@@ -568,7 +574,13 @@ impl Lane {
         sessions.dedup();
         sessions
             .into_iter()
-            .map(|session| (session, !self.lost.contains(&session)))
+            .map(|session| {
+                let state = self
+                    .reported
+                    .contains(&session)
+                    .then(|| !self.lost.contains(&session));
+                (session, state)
+            })
             .collect()
     }
 

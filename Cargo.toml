@@ -11,6 +11,7 @@ members = [
     "crates/powermug-adapter-iec104",
     "crates/powermug-bench",
     "crates/powermug-mgmt",
+    "crates/powermug-cell",
 ]
 
 [workspace.package]

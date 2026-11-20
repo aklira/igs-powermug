@@ -94,10 +94,8 @@ async fn an_empty_lane_reports_no_last_seen_value_and_its_session_up() {
     assert_eq!(status, 200);
     let document: Json = serde_json::from_str(&body).expect("json");
     assert!(indicator(&document, "telemetry_last_seen_seconds", None)["value"].is_null());
-    assert_eq!(
-        indicator(&document, "iec104_connection_up", Some(1))["value"],
-        1.0
-    );
+    // No adapter has reported the session yet: unknown, neither up nor down.
+    assert!(indicator(&document, "iec104_connection_up", Some(1))["value"].is_null());
 }
 
 #[tokio::test]

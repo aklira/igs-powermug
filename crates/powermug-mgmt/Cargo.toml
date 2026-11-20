@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 axum = "0.8"
-ed25519-dalek = "2"
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 powermug-core = { path = "../powermug-core" }
 powermug-revision = { path = "../powermug-revision" }
 powermug-store = { path = "../powermug-store" }

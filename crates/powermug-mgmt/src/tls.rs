@@ -108,3 +108,24 @@ impl axum::serve::Listener for TlsListener {
         self.tcp.local_addr()
     }
 }
+
+/// The trusted public key of signed plans, read from a PEM file (SPKI, Ed25519).
+///
+/// # Errors
+///
+/// Returns [`KeyError`] when the file cannot be read or is not an Ed25519 public key.
+pub fn load_trusted_key(path: &std::path::Path) -> Result<ed25519_dalek::VerifyingKey, KeyError> {
+    use ed25519_dalek::pkcs8::DecodePublicKey;
+    let pem = std::fs::read_to_string(path).map_err(|err| KeyError::Read(err.to_string()))?;
+    ed25519_dalek::VerifyingKey::from_public_key_pem(&pem)
+        .map_err(|err| KeyError::Pem(err.to_string()))
+}
+
+/// The trusted key could not be loaded.
+#[derive(Debug, Error)]
+pub enum KeyError {
+    #[error("cannot read the trusted key: {0}")]
+    Read(String),
+    #[error("the trusted key is not an Ed25519 public key in PEM form: {0}")]
+    Pem(String),
+}

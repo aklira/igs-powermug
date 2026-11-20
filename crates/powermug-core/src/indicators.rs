@@ -43,12 +43,13 @@ impl IndicatorSource for Mutex<Lane> {
             unit: "seconds",
             measured_at_ns: now_wall_ns,
         }];
-        for (session, up) in lane.session_states() {
+        for (session, state) in lane.session_states() {
+            // Unknown until an adapter has reported the session: not up, not down.
             indicators.push(Indicator {
                 name: "iec104_connection_up",
                 scope: "site",
                 session: Some(session.0),
-                value: Some(if up { 1.0 } else { 0.0 }),
+                value: state.map(|up| if up { 1.0 } else { 0.0 }),
                 unit: "boolean",
                 measured_at_ns: now_wall_ns,
             });
