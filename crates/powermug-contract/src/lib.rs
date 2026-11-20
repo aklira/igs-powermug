@@ -6,9 +6,12 @@
 //! the peer. The gRPC transport over a Unix socket is not written yet.
 
 pub mod bounds;
+pub mod client;
 pub mod credit;
 pub mod handshake;
 pub mod peer;
+pub mod server;
+pub mod service;
 
 /// Generated messages of `powermug.adapter.v1`.
 #[allow(

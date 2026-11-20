@@ -6,7 +6,8 @@
 // health and North RPCs are not defined yet.
 //
 // Transport: gRPC over a Unix domain socket. The adapter is the gRPC client,
-// the core is the server. Field numbers are never reused (§9.3 of [GW]).
+// the core is the server, and both services are served by the core. Field
+// numbers are never reused (§9.3 of [GW]).
 
 syntax = "proto3";
 
@@ -79,8 +80,9 @@ message Capabilities {
   string settings_schema = 10;
 }
 
-// Core's request, sent first.
-message DescribeRequest {
+// Core's answer to a handshake that it accepts. A refusal is a gRPC status
+// with code FAILED_PRECONDITION and the typed reason in its message.
+message HandshakeResponse {
   // API version the core speaks.
   Version api_version = 1;
   // Pivot version the core emits.
@@ -119,9 +121,10 @@ message AckBatch {
   string reason = 4;
 }
 
+// Served by the core. The adapter is the gRPC client (SPECIFICATIONS §6.1).
 service AdapterControl {
-  // Handshake: the adapter describes itself, and the core checks it.
-  rpc DescribeCapabilities(DescribeRequest) returns (Capabilities);
+  // Handshake: the adapter describes itself, and the core accepts or refuses.
+  rpc DescribeCapabilities(Capabilities) returns (HandshakeResponse);
 }
 
 service AdapterData {

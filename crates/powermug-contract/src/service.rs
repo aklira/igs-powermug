@@ -1,0 +1,183 @@
+//! Core side of `powermug.adapter.v1`: the services the core serves to one
+//! adapter instance.
+//!
+//! One socket serves one instance (SPECIFICATIONS §6.1). Every RPC checks the
+//! peer's credentials, read by tonic from `SO_PEERCRED`. A `StreamEvents` call
+//! is refused until the instance has been accepted by `DescribeCapabilities`.
+
+use std::sync::{Arc, Mutex, PoisonError};
+
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::transport::server::UdsConnectInfo;
+use tonic::{Request, Response, Status, Streaming};
+
+use crate::bounds;
+use crate::credit::CreditWindow;
+use crate::handshake::{self, Offer, API_VERSION};
+use crate::peer::{self, ExpectedPeer, PeerCredentials};
+use crate::proto::v1::{
+    adapter_control_server::AdapterControl, adapter_data_server::AdapterData, AckBatch, AckStatus,
+    Capabilities, EventBatch, HandshakeResponse,
+};
+
+/// What the core requires of the instance it spawned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreConfig {
+    pub offer: Offer,
+    pub expected_peer: ExpectedPeer,
+}
+
+/// State of the instance once its handshake is accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Accepted {
+    window_events: u32,
+}
+
+/// The core's service for one adapter instance.
+#[derive(Debug, Clone)]
+pub struct CoreService {
+    config: Arc<CoreConfig>,
+    accepted: Arc<Mutex<Option<Accepted>>>,
+}
+
+impl CoreService {
+    #[must_use]
+    pub fn new(config: CoreConfig) -> Self {
+        Self {
+            config: Arc::new(config),
+            accepted: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn accepted(&self) -> Option<Accepted> {
+        *self.accepted.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set_accepted(&self, accepted: Accepted) {
+        *self.accepted.lock().unwrap_or_else(PoisonError::into_inner) = Some(accepted);
+    }
+}
+
+/// Checks the peer of a request against the instance the core spawned.
+fn authenticate<T>(request: &Request<T>, expected: ExpectedPeer) -> Result<(), Status> {
+    let info = request
+        .extensions()
+        .get::<UdsConnectInfo>()
+        .ok_or_else(|| Status::unauthenticated("no connection information"))?;
+    let cred = info
+        .peer_cred
+        .ok_or_else(|| Status::unauthenticated("no peer credentials on the socket"))?;
+    let pid = cred
+        .pid()
+        .ok_or_else(|| Status::unauthenticated("no peer pid on the socket"))?;
+    peer::authenticate(
+        expected,
+        PeerCredentials {
+            uid: cred.uid(),
+            pid,
+        },
+    )
+    .map_err(|err| Status::permission_denied(err.to_string()))
+}
+
+fn version(major: u32, minor: u32) -> crate::proto::v1::Version {
+    crate::proto::v1::Version { major, minor }
+}
+
+#[tonic::async_trait]
+impl AdapterControl for CoreService {
+    async fn describe_capabilities(
+        &self,
+        request: Request<Capabilities>,
+    ) -> Result<Response<HandshakeResponse>, Status> {
+        authenticate(&request, self.config.expected_peer)?;
+        let capabilities = request.into_inner();
+        handshake::check(&capabilities, &self.config.offer)
+            .map_err(|err| Status::failed_precondition(err.to_string()))?;
+
+        let window_events = capabilities
+            .limits
+            .as_ref()
+            .map_or(0, |limits| limits.window_events);
+        self.set_accepted(Accepted { window_events });
+
+        Ok(Response::new(HandshakeResponse {
+            api_version: Some(version(API_VERSION.major, API_VERSION.minor)),
+            pivot_version: Some(version(
+                self.config.offer.pivot.major,
+                self.config.offer.pivot.minor,
+            )),
+        }))
+    }
+}
+
+fn ack(batch_sequence: u64, status: AckStatus, credits_granted: u32, reason: &str) -> AckBatch {
+    AckBatch {
+        batch_sequence,
+        status: status as i32,
+        credits_granted,
+        reason: reason.to_owned(),
+    }
+}
+
+#[tonic::async_trait]
+impl AdapterData for CoreService {
+    type StreamEventsStream = ReceiverStream<Result<AckBatch, Status>>;
+
+    async fn stream_events(
+        &self,
+        request: Request<Streaming<EventBatch>>,
+    ) -> Result<Response<Self::StreamEventsStream>, Status> {
+        authenticate(&request, self.config.expected_peer)?;
+        let accepted = self.accepted().ok_or_else(|| {
+            Status::failed_precondition("no accepted handshake for this instance")
+        })?;
+
+        let (tx, rx) = mpsc::channel(16);
+        let mut inbound = request.into_inner();
+        tokio::spawn(async move {
+            // The window starts full: the adapter may send one window at once.
+            let mut window = CreditWindow::new(accepted.window_events);
+            if window.grant(accepted.window_events).is_err() {
+                return;
+            }
+            loop {
+                let batch = match inbound.message().await {
+                    Ok(Some(batch)) => batch,
+                    Ok(None) => return,
+                    Err(status) => {
+                        let _ = tx.send(Err(status)).await;
+                        return;
+                    }
+                };
+                if let Err(err) = bounds::check_batch_events(batch.events.len()) {
+                    let _ = tx
+                        .send(Err(Status::invalid_argument(err.to_string())))
+                        .await;
+                    return;
+                }
+                // Batch sizes are bounded by MAX_BATCH_EVENTS, so this fits.
+                let events = u32::try_from(batch.events.len()).unwrap_or(u32::MAX);
+                let reply = match window.consume(events) {
+                    Ok(()) => {
+                        // Events are in memory only: the store is not written
+                        // yet, so DURABLE is not sent. Credits return now.
+                        let _ = window.grant(events);
+                        ack(batch.batch_sequence, AckStatus::Received, events, "")
+                    }
+                    Err(err) => ack(
+                        batch.batch_sequence,
+                        AckStatus::Rejected,
+                        0,
+                        &format!("batch exceeds the credit window: {err}"),
+                    ),
+                };
+                if tx.send(Ok(reply)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
