@@ -537,3 +537,57 @@ async fn a_silent_instance_is_killed_and_restarted() {
     assert_eq!(replacement.len(), 1, "{replacement:?}");
     assert_ne!(replacement, frozen, "the frozen process was not replaced");
 }
+
+#[tokio::test]
+async fn a_station_that_stops_degrades_its_points_in_under_two_seconds() {
+    // ACC-013: the loss of a South session degrades every attached point in less than 2 s.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let station = start_station().await;
+    let config = configuration(dir.path(), station.addr, BIN);
+    let lane = lane_of(&config, dir.path());
+    let instance = instances(&config).expect("instances").remove(0);
+
+    let (stop, stopped) = watch::channel(false);
+    let supervisor = tokio::spawn(supervise(
+        instance,
+        Arc::clone(&lane),
+        Policy::default(),
+        stopped,
+    ));
+    let watched = Arc::clone(&lane);
+    let fed = wait_until(
+        || {
+            watched
+                .lock()
+                .expect("lock")
+                .image()
+                .get(PointIndex(0))
+                .is_some()
+        },
+        30,
+    )
+    .await;
+    assert!(fed, "the lane did not receive a value before the stop");
+
+    let started = Instant::now();
+    let _ = station.stop.send(());
+    let _ = station.task.await;
+    let mut elapsed = None;
+    while started.elapsed() < Duration::from_secs(10) {
+        if watched.lock().expect("lock").is_lost(SessionId(1)) {
+            elapsed = Some(started.elapsed());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let _ = stop.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(15), supervisor).await;
+
+    let elapsed = elapsed.expect("the session was not degraded within 10 s");
+    eprintln!("session degraded {elapsed:?} after the station stopped");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "degraded after {elapsed:?}"
+    );
+}
