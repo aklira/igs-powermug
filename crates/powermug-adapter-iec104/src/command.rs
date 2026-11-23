@@ -11,7 +11,7 @@
 
 use igs_iec104::client::{Client, ClientError};
 use igs_iec104_codec::asdu::{Asdu, Body, Objects};
-use igs_iec104_codec::elements::{Dco, DoubleCommandState, Qoc, Sco};
+use igs_iec104_codec::elements::{Dco, DoubleCommandState, Qoc, Qos, Sco, ShortFloat};
 use igs_iec104_codec::header::{cause, InformationObjectAddress};
 use thiserror::Error;
 
@@ -33,6 +33,17 @@ pub struct DoubleCommand {
     pub address: u32,
     /// ON (`true`) or OFF (`false`).
     pub on: bool,
+    /// Select (`true`) or execute (`false`), for select-before-operate.
+    pub select: bool,
+}
+
+/// A set point with a short floating point value, to one object of the station.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SetPointFloat {
+    /// The information object address of the set point.
+    pub address: u32,
+    /// The value to set.
+    pub value: f32,
     /// Select (`true`) or execute (`false`), for select-before-operate.
     pub select: bool,
 }
@@ -91,6 +102,36 @@ pub async fn send(client: &Client, command: SingleCommand) -> Result<(), Command
 /// # Errors
 ///
 /// As [`send`].
+/// Sends a set point with a short floating point value. Like [`send`], it returns once the
+/// request is queued.
+///
+/// # Errors
+///
+/// As [`send`].
+pub async fn send_setpoint_float(
+    client: &Client,
+    command: SetPointFloat,
+) -> Result<(), CommandError> {
+    let address = InformationObjectAddress::new(command.address)
+        .ok_or(CommandError::Address(command.address))?;
+    // QL 0: the default qualifier, no additional definition.
+    let qualifier = Qos::new(0, command.select).ok_or(CommandError::Qualifier)?;
+    client
+        .set_point_float(
+            address,
+            ShortFloat::from_f32(command.value),
+            qualifier,
+            None,
+        )
+        .await
+        .map_err(CommandError::from)
+}
+
+/// Sends a double command. Like [`send`], it returns once the request is queued.
+///
+/// # Errors
+///
+/// As [`send`].
 pub async fn send_double(client: &Client, command: DoubleCommand) -> Result<(), CommandError> {
     let address = InformationObjectAddress::new(command.address)
         .ok_or(CommandError::Address(command.address))?;
@@ -132,6 +173,7 @@ pub fn answer(asdu: &Asdu) -> Option<(u32, Answer)> {
     let address = match &asdu.body {
         Body::C_SC_NA_1(objects) => first_address(objects)?,
         Body::C_DC_NA_1(objects) => first_address(objects)?,
+        Body::C_SE_NC_1(objects) => first_address(objects)?,
         _ => return None,
     };
     let answer = match (asdu.cot.cause(), asdu.cot.negative) {
