@@ -10,6 +10,7 @@ pub mod dispatch;
 pub mod journal;
 pub mod ownership;
 pub mod state;
+pub mod writer;
 
 pub use authorization::{authorize, Acl, Grant, Mode, Refusal, Request, Value, ValueRule};
 pub use journal::{
@@ -17,3 +18,4 @@ pub use journal::{
     Transition,
 };
 pub use state::{transitions, State};
+pub use writer::{CommandClient, CommandWriter};

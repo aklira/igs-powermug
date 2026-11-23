@@ -106,6 +106,8 @@ pub enum CommandError {
     UnknownState(String),
     #[error("the audit chain breaks at record {0}")]
     AuditBroken(i64),
+    #[error("the command writer has stopped")]
+    WriterStopped,
     #[error("database error: {0}")]
     Database(String),
 }
