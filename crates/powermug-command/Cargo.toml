@@ -1,0 +1,19 @@
+[package]
+name = "powermug-command"
+description = "Command plane of Powermug: the state machine of a command (SPECIFICATIONS 9.1) and its critical journal with recovery (9.2, 9.7)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

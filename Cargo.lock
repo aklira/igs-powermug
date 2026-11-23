@@ -1555,6 +1555,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "powermug-command"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "powermug-contract"
 version = "0.1.0"
 dependencies = [

@@ -12,6 +12,7 @@ members = [
     "crates/powermug-bench",
     "crates/powermug-mgmt",
     "crates/powermug-cell",
+    "crates/powermug-command",
 ]
 
 [workspace.package]
