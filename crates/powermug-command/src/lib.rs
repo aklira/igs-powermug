@@ -4,9 +4,11 @@
 //! Nothing here sends a command. The North adapter gives commands to the core, and the South
 //! adapter emits them; this crate decides what may be emitted, and records every step.
 
+pub mod authorization;
 pub mod journal;
 pub mod state;
 
+pub use authorization::{authorize, Acl, Grant, Mode, Refusal, Request, Value, ValueRule};
 pub use journal::{
     Action, CommandError, CommandJournal, NewCommand, Phase, Recovery, RecoveryContext, Submission,
     Transition,
