@@ -11,13 +11,24 @@
 
 use igs_iec104::client::{Client, ClientError};
 use igs_iec104_codec::asdu::{Asdu, Body, Objects};
-use igs_iec104_codec::elements::{Qoc, Sco};
+use igs_iec104_codec::elements::{Dco, DoubleCommandState, Qoc, Sco};
 use igs_iec104_codec::header::{cause, InformationObjectAddress};
 use thiserror::Error;
 
 /// A single command to one object of the station.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SingleCommand {
+    /// The information object address of the command.
+    pub address: u32,
+    /// ON (`true`) or OFF (`false`).
+    pub on: bool,
+    /// Select (`true`) or execute (`false`), for select-before-operate.
+    pub select: bool,
+}
+
+/// A double command to one object of the station.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoubleCommand {
     /// The information object address of the command.
     pub address: u32,
     /// ON (`true`) or OFF (`false`).
@@ -46,6 +57,8 @@ pub enum CommandError {
     Qualifier,
     #[error("the client could not send the command: {0}")]
     Client(#[from] ClientError),
+    #[error("the command expired at {expires_ns} ns, before its emission at {now_ns} ns")]
+    Expired { expires_ns: i64, now_ns: i64 },
 }
 
 /// Sends a single command. Returns once the request is queued on the connection; the answer
@@ -73,16 +86,53 @@ pub async fn send(client: &Client, command: SingleCommand) -> Result<(), Command
         .map_err(CommandError::from)
 }
 
-/// The answer of the station to a single command, with the address it concerns, if `asdu` is
-/// such an answer.
+/// Sends a double command. Like [`send`], it returns once the request is queued.
+///
+/// # Errors
+///
+/// As [`send`].
+pub async fn send_double(client: &Client, command: DoubleCommand) -> Result<(), CommandError> {
+    let address = InformationObjectAddress::new(command.address)
+        .ok_or(CommandError::Address(command.address))?;
+    let qoc =
+        Qoc::new(Qoc::NO_ADDITIONAL_DEFINITION, command.select).ok_or(CommandError::Qualifier)?;
+    let state = if command.on {
+        DoubleCommandState::On
+    } else {
+        DoubleCommandState::Off
+    };
+    client
+        .double_command(address, Dco { state, qoc }, None)
+        .await
+        .map_err(CommandError::from)
+}
+
+/// Sends a single command only if it has not expired at `now_ns` (PM-CMD-004): an expired
+/// command is never emitted, and the check is made just before the emission.
+///
+/// # Errors
+///
+/// Returns [`CommandError::Expired`] past `expires_ns`, and otherwise as [`send`].
+pub async fn send_before_expiry(
+    client: &Client,
+    command: SingleCommand,
+    expires_ns: i64,
+    now_ns: i64,
+) -> Result<(), CommandError> {
+    if expires_ns <= now_ns {
+        return Err(CommandError::Expired { expires_ns, now_ns });
+    }
+    send(client, command).await
+}
+
+/// The answer of the station to a single or double command, with the address it concerns, if
+/// `asdu` is such an answer.
 #[must_use]
 pub fn answer(asdu: &Asdu) -> Option<(u32, Answer)> {
-    let Body::C_SC_NA_1(objects) = &asdu.body else {
-        return None;
-    };
-    let address = match objects {
-        Objects::Individual(items) => items.first()?.address.value(),
-        Objects::Sequence { address, .. } => address.value(),
+    let address = match &asdu.body {
+        Body::C_SC_NA_1(objects) => first_address(objects)?,
+        Body::C_DC_NA_1(objects) => first_address(objects)?,
+        _ => return None,
     };
     let answer = match (asdu.cot.cause(), asdu.cot.negative) {
         (cause::ACTIVATION_CONFIRMATION, false) => Answer::Confirmed,
@@ -91,4 +141,12 @@ pub fn answer(asdu: &Asdu) -> Option<(u32, Answer)> {
         _ => return None,
     };
     Some((address, answer))
+}
+
+/// The address of the first object of an ASDU.
+fn first_address<T>(objects: &Objects<T>) -> Option<u32> {
+    match objects {
+        Objects::Individual(items) => Some(items.first()?.address.value()),
+        Objects::Sequence { address, .. } => Some(address.value()),
+    }
 }
