@@ -4,6 +4,7 @@
 //! `igs-iec104`, into pivot envelopes of `powermug.pivot.v1`. The connection,
 //! the general interrogation and the transport to the core are not written yet.
 
+pub mod command;
 pub mod convert;
 pub mod mapping;
 pub mod run;
