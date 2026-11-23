@@ -512,6 +512,79 @@ impl CommandJournal {
         Ok(to)
     }
 
+    /// Closes the open intent of a command whose call was not sent: the state does not change,
+    /// and the result says why.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::NoOpenIntent`] when no intent is open.
+    pub fn close_intent_not_sent(
+        &mut self,
+        command_id: &str,
+        at_ns: i64,
+        reason: &str,
+    ) -> Result<State, CommandError> {
+        let tx = self.conn.transaction()?;
+        let from = current(&tx, command_id)?;
+        let Some(intent) = open_intent(&tx, command_id)? else {
+            return Err(CommandError::NoOpenIntent(command_id.to_owned(), "any"));
+        };
+        tx.execute(
+            "UPDATE command_transitions SET closed = 1
+             WHERE command_id = ?1 AND phase = 'intent' AND closed = 0",
+            params![command_id],
+        )?;
+        tx.execute(
+            "INSERT INTO command_transitions (command_id, phase, from_state, to_state, at_ns, detail)
+             VALUES (?1, 'result', ?2, ?2, ?3, ?4)",
+            params![command_id, from.code(), at_ns, format!("not sent toward {}: {reason}", intent.code())],
+        )?;
+        audit::append(
+            &tx,
+            "command.not_sent",
+            command_id,
+            &format!("{} {reason}", intent.code()),
+            at_ns,
+        )?;
+        tx.commit()?;
+        Ok(from)
+    }
+
+    /// Closes the open intent of a command whose call may or may not have left: the command is
+    /// `IN_DOUBT`, and it is never replayed (PM-CMD-002).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::NoOpenIntent`] when no intent is open, and
+    /// [`CommandError::IllegalTransition`] when `IN_DOUBT` is not reachable from the state.
+    pub fn close_intent_unknown(
+        &mut self,
+        command_id: &str,
+        at_ns: i64,
+        reason: &str,
+    ) -> Result<State, CommandError> {
+        let tx = self.conn.transaction()?;
+        let from = current(&tx, command_id)?;
+        let Some(intent) = open_intent(&tx, command_id)? else {
+            return Err(CommandError::NoOpenIntent(command_id.to_owned(), "any"));
+        };
+        check(from, State::InDoubt)?;
+        tx.execute(
+            "UPDATE command_transitions SET closed = 1
+             WHERE command_id = ?1 AND phase = 'intent' AND closed = 0",
+            params![command_id],
+        )?;
+        set_state(&tx, command_id, State::InDoubt, at_ns)?;
+        tx.execute(
+            "INSERT INTO command_transitions (command_id, phase, from_state, to_state, at_ns, detail)
+             VALUES (?1, 'result', ?2, 'IN_DOUBT', ?3, ?4)",
+            params![command_id, from.code(), at_ns, format!("unknown after intent {}: {reason}", intent.code())],
+        )?;
+        audit::append(&tx, "command.in_doubt", command_id, reason, at_ns)?;
+        tx.commit()?;
+        Ok(State::InDoubt)
+    }
+
     /// The history of a command, oldest first.
     ///
     /// # Errors

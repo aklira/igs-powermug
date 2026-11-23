@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 
 use crate::authorization::Mode;
 use crate::journal::{
-    CommandError, CommandJournal, NewCommand, Recovery, RecoveryContext, Submission,
+    CommandError, CommandJournal, NewCommand, Recovery, RecoveryContext, Submission, Transition,
 };
 use crate::state::State;
 
@@ -35,6 +35,9 @@ enum Request {
     VerifyAudit(Sender<Result<u64, CommandError>>),
     AuditHead(Sender<Result<[u8; 32], CommandError>>),
     GetMode(Sender<Result<Mode, CommandError>>),
+    History(String, Sender<Result<Vec<Transition>, CommandError>>),
+    CloseNotSent(String, i64, String, Sender<Result<State, CommandError>>),
+    CloseUnknown(String, i64, String, Sender<Result<State, CommandError>>),
     SetMode(Mode, String, i64, Sender<Result<bool, CommandError>>),
 }
 
@@ -90,6 +93,15 @@ impl CommandWriter {
                     }
                     Request::GetMode(reply) => {
                         let _ = reply.send(journal.mode());
+                    }
+                    Request::History(id, reply) => {
+                        let _ = reply.send(journal.history(&id));
+                    }
+                    Request::CloseNotSent(id, at, reason, reply) => {
+                        let _ = reply.send(journal.close_intent_not_sent(&id, at, &reason));
+                    }
+                    Request::CloseUnknown(id, at, reason, reply) => {
+                        let _ = reply.send(journal.close_intent_unknown(&id, at, &reason));
                     }
                     Request::SetMode(mode, actor, at, reply) => {
                         let _ = reply.send(journal.set_mode(mode, &actor, at));
@@ -227,5 +239,46 @@ impl CommandClient {
     /// Returns the journal's error, or [`CommandError::WriterStopped`].
     pub fn set_mode(&self, mode: Mode, actor: &str, at_ns: i64) -> Result<bool, CommandError> {
         self.call(|reply| Request::SetMode(mode, actor.to_owned(), at_ns, reply))
+    }
+
+    /// See [`CommandJournal::close_intent_not_sent`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error, or [`CommandError::WriterStopped`].
+    pub fn close_intent_not_sent(
+        &self,
+        command_id: &str,
+        at_ns: i64,
+        reason: &str,
+    ) -> Result<State, CommandError> {
+        self.call(|reply| {
+            Request::CloseNotSent(command_id.to_owned(), at_ns, reason.to_owned(), reply)
+        })
+    }
+
+    /// See [`CommandJournal::close_intent_unknown`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error, or [`CommandError::WriterStopped`].
+    pub fn close_intent_unknown(
+        &self,
+        command_id: &str,
+        at_ns: i64,
+        reason: &str,
+    ) -> Result<State, CommandError> {
+        self.call(|reply| {
+            Request::CloseUnknown(command_id.to_owned(), at_ns, reason.to_owned(), reply)
+        })
+    }
+
+    /// See [`CommandJournal::history`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error, or [`CommandError::WriterStopped`].
+    pub fn history(&self, command_id: &str) -> Result<Vec<Transition>, CommandError> {
+        self.call(|reply| Request::History(command_id.to_owned(), reply))
     }
 }

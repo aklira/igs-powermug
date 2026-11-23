@@ -7,6 +7,7 @@
 pub mod audit;
 pub mod authorization;
 pub mod dispatch;
+pub mod emission;
 pub mod identity;
 pub mod journal;
 pub mod ownership;
@@ -14,6 +15,7 @@ pub mod state;
 pub mod writer;
 
 pub use authorization::{authorize, Acl, Grant, Mode, Refusal, Request, Value, ValueRule};
+pub use emission::{Emission, Outcome};
 pub use identity::{Granularity, Identity};
 pub use journal::{
     Action, CommandError, CommandJournal, NewCommand, Phase, Recovery, RecoveryContext, Submission,
