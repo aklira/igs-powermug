@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 
+use crate::authorization::Mode;
 use crate::journal::{
     CommandError, CommandJournal, NewCommand, Recovery, RecoveryContext, Submission,
 };
@@ -33,6 +34,8 @@ enum Request {
     State(String, Sender<Result<Option<State>, CommandError>>),
     VerifyAudit(Sender<Result<u64, CommandError>>),
     AuditHead(Sender<Result<[u8; 32], CommandError>>),
+    GetMode(Sender<Result<Mode, CommandError>>),
+    SetMode(Mode, String, i64, Sender<Result<bool, CommandError>>),
 }
 
 /// The handle used to send requests to the writer. Cloneable; every clone talks to the same
@@ -84,6 +87,12 @@ impl CommandWriter {
                     }
                     Request::AuditHead(reply) => {
                         let _ = reply.send(journal.audit_head());
+                    }
+                    Request::GetMode(reply) => {
+                        let _ = reply.send(journal.mode());
+                    }
+                    Request::SetMode(mode, actor, at, reply) => {
+                        let _ = reply.send(journal.set_mode(mode, &actor, at));
                     }
                 }
             }
@@ -200,5 +209,23 @@ impl CommandClient {
     /// Returns the journal's error, or [`CommandError::WriterStopped`].
     pub fn audit_head(&self) -> Result<[u8; 32], CommandError> {
         self.call(Request::AuditHead)
+    }
+
+    /// See [`CommandJournal::mode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error, or [`CommandError::WriterStopped`].
+    pub fn mode(&self) -> Result<Mode, CommandError> {
+        self.call(Request::GetMode)
+    }
+
+    /// See [`CommandJournal::set_mode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error, or [`CommandError::WriterStopped`].
+    pub fn set_mode(&self, mode: Mode, actor: &str, at_ns: i64) -> Result<bool, CommandError> {
+        self.call(|reply| Request::SetMode(mode, actor.to_owned(), at_ns, reply))
     }
 }

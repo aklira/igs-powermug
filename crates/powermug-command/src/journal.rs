@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use thiserror::Error;
 
 use crate::audit;
+use crate::authorization::Mode;
 use crate::identity::Granularity;
 use crate::state::State;
 
@@ -37,6 +38,12 @@ CREATE TABLE IF NOT EXISTS command_transitions (
     at_ns       INTEGER NOT NULL,
     closed      INTEGER NOT NULL DEFAULT 0 CHECK (closed IN (0, 1)),
     detail      TEXT    NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS mode (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    mode        TEXT    NOT NULL,
+    changed_ns  INTEGER NOT NULL,
+    actor       TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS command_transitions_by_command
     ON command_transitions (command_id, id);
@@ -291,6 +298,61 @@ impl CommandJournal {
         )?;
         tx.commit()?;
         Ok(Submission::Created)
+    }
+
+    /// The operating mode. A cell that never set one runs in `normal`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::Database`] on a read failure, and
+    /// [`CommandError::UnknownState`] for a stored mode it does not know.
+    pub fn mode(&self) -> Result<Mode, CommandError> {
+        let code: Option<String> = self
+            .conn
+            .query_row("SELECT mode FROM mode WHERE id = 1", [], |row| row.get(0))
+            .optional()?;
+        match code {
+            None => Ok(Mode::Normal),
+            Some(code) => Mode::from_code(&code).ok_or(CommandError::UnknownState(code)),
+        }
+    }
+
+    /// Sets the operating mode, on behalf of `actor`. A change is written with its audit
+    /// record in one transaction; setting the mode it already has writes nothing. Returns
+    /// whether the mode changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::Database`] on a failure; nothing is changed then.
+    pub fn set_mode(&mut self, mode: Mode, actor: &str, at_ns: i64) -> Result<bool, CommandError> {
+        let tx = self.conn.transaction()?;
+        let current: Option<String> = tx
+            .query_row("SELECT mode FROM mode WHERE id = 1", [], |row| row.get(0))
+            .optional()?;
+        let previous = match current {
+            None => Mode::Normal,
+            Some(code) => Mode::from_code(&code).ok_or(CommandError::UnknownState(code))?,
+        };
+        if previous == mode {
+            tx.commit()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO mode (id, mode, changed_ns, actor) VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET mode = excluded.mode,
+                                           changed_ns = excluded.changed_ns,
+                                           actor = excluded.actor",
+            params![mode.code(), at_ns, actor],
+        )?;
+        audit::append(
+            &tx,
+            "mode.set",
+            actor,
+            &format!("{} -> {}", previous.code(), mode.code()),
+            at_ns,
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// The identity a command was recorded with, and its granularity.

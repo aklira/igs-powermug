@@ -48,6 +48,8 @@ pub enum CellError {
     Listen(String),
     #[error(transparent)]
     Sandbox(#[from] powermug_sandbox::SandboxError),
+    #[error(transparent)]
+    Command(#[from] powermug_command::CommandError),
 }
 
 /// The indicators of the cell: those of every lane, measured together.
@@ -71,6 +73,7 @@ pub struct Cell {
     pub api: Arc<Api>,
     pub lanes: Vec<Arc<Mutex<Lane>>>,
     writer: Writer,
+    commands: powermug_command::CommandWriter,
 }
 
 impl Cell {
@@ -98,16 +101,36 @@ impl Cell {
         let indicators: Arc<dyn IndicatorSource> = Arc::new(CellIndicators {
             lanes: lanes.clone(),
         });
-        let api = Arc::new(Api::new(critical, powermug_v1(), trusted_key, indicators));
-        Ok(Self { api, lanes, writer })
+        // The command journal lives in the critical store's file, on its own connection.
+        let (commands, command_writer) =
+            powermug_command::CommandWriter::spawn(&config.critical_db)?;
+        let api = Arc::new(Api::new(
+            critical,
+            powermug_v1(),
+            trusted_key,
+            indicators,
+            commands,
+        ));
+        Ok(Self {
+            api,
+            lanes,
+            writer,
+            commands: command_writer,
+        })
     }
 
     /// Releases the lanes and waits for the telemetry writer to stop.
     pub fn close(self) {
-        let Self { api, lanes, writer } = self;
+        let Self {
+            api,
+            lanes,
+            writer,
+            commands,
+        } = self;
         drop(api);
         drop(lanes);
         writer.join();
+        commands.join();
     }
 }
 

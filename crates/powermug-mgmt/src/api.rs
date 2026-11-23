@@ -14,6 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use ed25519_dalek::VerifyingKey;
+use powermug_command::{CommandClient, CommandError, Mode};
 use powermug_core::IndicatorSource;
 use powermug_revision::canonical::canonical_bytes;
 use powermug_revision::partition::{
@@ -31,6 +32,7 @@ pub struct Api {
     profile: Profile,
     trusted_key: VerifyingKey,
     indicators: Arc<dyn IndicatorSource>,
+    commands: CommandClient,
 }
 
 impl Api {
@@ -42,12 +44,14 @@ impl Api {
         profile: Profile,
         trusted_key: VerifyingKey,
         indicators: Arc<dyn IndicatorSource>,
+        commands: CommandClient,
     ) -> Self {
         Self {
             store: Mutex::new(store),
             profile,
             trusted_key,
             indicators,
+            commands,
         }
     }
 
@@ -74,6 +78,7 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/revisions/activate", post(activate))
         .route("/revisions/rollback", post(rollback))
         .route("/revisions/{id}", get(revision))
+        .route("/mode", get(mode_get).post(mode_set))
         .with_state(api)
 }
 
@@ -104,6 +109,16 @@ impl ApiError {
             message: format!("{} finding(s) on the partition document", findings.len()),
             findings,
         }
+    }
+}
+
+impl From<CommandError> for ApiError {
+    fn from(error: CommandError) -> Self {
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "journal_error",
+            format!("the command journal could not answer: {error}"),
+        )
     }
 }
 
@@ -389,4 +404,50 @@ async fn activate(
         "revision_id": verified.id,
         "scope": verified.scope,
     })))
+}
+
+/// The operating mode of the cell (FUN-OPS-006): `normal`, `maintenance` or `shadow`.
+async fn mode_get(State(api): State<Arc<Api>>) -> Result<Json<Value>, ApiError> {
+    let mode = api.commands.mode()?;
+    Ok(Json(json!({ "mode": mode.code() })))
+}
+
+/// The body of a mode change: the mode asked for, and the actor who asks.
+#[derive(Debug, Deserialize)]
+struct ModeRequest {
+    mode: String,
+    actor: String,
+}
+
+/// Sets the operating mode. The change is audited with its actor. Setting the mode the cell
+/// already has changes nothing.
+async fn mode_set(
+    State(api): State<Arc<Api>>,
+    Json(request): Json<ModeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let Some(mode) = Mode::from_code(&request.mode) else {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "unknown_mode",
+            format!(
+                "{} is not a mode: normal, maintenance or shadow",
+                request.mode
+            ),
+        ));
+    };
+    if request.actor.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "actor_required",
+            "a mode change names the actor who asks for it",
+        ));
+    }
+    let at_ns = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos()),
+    )
+    .unwrap_or(i64::MAX);
+    let changed = api.commands.set_mode(mode, &request.actor, at_ns)?;
+    Ok(Json(json!({ "mode": mode.code(), "changed": changed })))
 }

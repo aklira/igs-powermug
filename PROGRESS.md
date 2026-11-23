@@ -172,6 +172,7 @@ Exit: ACC-009, ACC-012 pass; first major-release campaign complete.
 
 ## Journal
 
+- **2026-11-23:** P3 operating mode: kept in the command journal, changes audited with the actor, read and set through `GET /mode` and `POST /mode` over mTLS. Mode tests in the journal (4) and the API (1). The cell opens the command journal in its critical store file. Workspace tests, clippy `-D warnings` and fmt green. Not committed. Open: the actor from the client certificate, and the mode check on the command path.
 - **2026-11-23:** P3 identity levels (GW 11.6): granularity per North protocol, a minimum level on grants, the level recorded with each command. Four tests, and the authorization and journal tests updated for the new fields. Workspace tests, clippy `-D warnings` and fmt green. Not committed. Open: the identity is not yet carried from the North adapter to the core.
 - **2026-11-23:** P3 writer thread for the command journal: one thread owns the journal, clients wait for their answer; 3 tests, with a timing on this host (p99 0.68 ms for a submission and a transition). Workspace tests, clippy `-D warnings` and fmt green. Not committed.
 - **2026-11-23:** P3 hash-chained audit: each command write adds a record in the same transaction, chained by SHA-256; verification and anchored head. Five tests. Workspace tests, clippy `-D warnings` and fmt green. Not committed.

@@ -19,6 +19,26 @@ pub enum Mode {
     Shadow,
 }
 
+impl Mode {
+    /// The name stored in the journal and sent by the management API.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Mode::Normal => "normal",
+            Mode::Maintenance => "maintenance",
+            Mode::Shadow => "shadow",
+        }
+    }
+
+    /// The mode named by its code, if any.
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        [Mode::Normal, Mode::Maintenance, Mode::Shadow]
+            .into_iter()
+            .find(|mode| mode.code() == code)
+    }
+}
+
 /// The values a grant accepts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ValueRule {

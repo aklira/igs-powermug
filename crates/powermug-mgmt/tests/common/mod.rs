@@ -97,6 +97,15 @@ pub async fn serve(pki: &Pki, store: CriticalStore, trusted_key: VerifyingKey) -
     serve_with(pki, store, trusted_key, std::sync::Arc::new(NoIndicators)).await
 }
 
+/// A command journal for the API, in a directory kept for the test run.
+pub fn command_client() -> powermug_command::CommandClient {
+    let dir = tempfile::tempdir().expect("temp dir").keep();
+    let (client, writer) =
+        powermug_command::CommandWriter::spawn(dir.join("critical.db")).expect("spawns");
+    drop(writer);
+    client
+}
+
 /// As [`serve`], with the indicators of `source`.
 pub async fn serve_with(
     pki: &Pki,
@@ -112,7 +121,13 @@ pub async fn serve_with(
         pki.client_ca_pem.as_bytes(),
     )
     .expect("server TLS");
-    let api = Arc::new(Api::new(store, powermug_v1(), trusted_key, source));
+    let api = Arc::new(Api::new(
+        store,
+        powermug_v1(),
+        trusted_key,
+        source,
+        command_client(),
+    ));
     tokio::spawn(async move {
         let _ = axum::serve(TlsListener::new(listener, config), router(api)).await;
     });

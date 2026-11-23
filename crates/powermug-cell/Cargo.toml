@@ -19,6 +19,7 @@ path = "src/main.rs"
 axum = "0.8"
 ed25519-dalek = "2"
 powermug-adapter-iec104 = { path = "../powermug-adapter-iec104" }
+powermug-command = { path = "../powermug-command" }
 powermug-contract = { path = "../powermug-contract" }
 powermug-core = { path = "../powermug-core" }
 powermug-mgmt = { path = "../powermug-mgmt" }
