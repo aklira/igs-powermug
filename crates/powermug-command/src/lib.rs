@@ -5,7 +5,9 @@
 //! adapter emits them; this crate decides what may be emitted, and records every step.
 
 pub mod authorization;
+pub mod dispatch;
 pub mod journal;
+pub mod ownership;
 pub mod state;
 
 pub use authorization::{authorize, Acl, Grant, Mode, Refusal, Request, Value, ValueRule};
