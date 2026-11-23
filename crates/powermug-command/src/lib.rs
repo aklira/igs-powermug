@@ -4,6 +4,7 @@
 //! Nothing here sends a command. The North adapter gives commands to the core, and the South
 //! adapter emits them; this crate decides what may be emitted, and records every step.
 
+pub mod audit;
 pub mod authorization;
 pub mod dispatch;
 pub mod journal;

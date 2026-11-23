@@ -8,6 +8,7 @@
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use thiserror::Error;
 
+use crate::audit;
 use crate::state::State;
 
 const SCHEMA: &str = "
@@ -103,6 +104,8 @@ pub enum CommandError {
     NoOpenIntent(String, &'static str),
     #[error("the journal holds an unknown state {0}")]
     UnknownState(String),
+    #[error("the audit chain breaks at record {0}")]
+    AuditBroken(i64),
     #[error("database error: {0}")]
     Database(String),
 }
@@ -218,6 +221,7 @@ impl CommandJournal {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(audit::SCHEMA)?;
         Ok(Self { conn })
     }
 
@@ -271,6 +275,13 @@ impl CommandJournal {
              VALUES (?1, 'result', NULL, ?2, ?3)",
             params![command.command_id, State::Received.code(), at_ns],
         )?;
+        audit::append(
+            &tx,
+            "command.submitted",
+            &command.command_id,
+            State::Received.code(),
+            at_ns,
+        )?;
         tx.commit()?;
         Ok(Submission::Created)
     }
@@ -319,6 +330,13 @@ impl CommandJournal {
              VALUES (?1, 'result', ?2, ?3, ?4, ?5)",
             params![command_id, from.code(), to.code(), at_ns, detail],
         )?;
+        audit::append(
+            &tx,
+            "command.transition",
+            command_id,
+            &format!("{} -> {} {detail}", from.code(), to.code()),
+            at_ns,
+        )?;
         tx.commit()?;
         Ok(to)
     }
@@ -346,6 +364,13 @@ impl CommandJournal {
             "INSERT INTO command_transitions (command_id, phase, from_state, to_state, at_ns, closed)
              VALUES (?1, 'intent', ?2, ?3, ?4, 0)",
             params![command_id, from.code(), to.code(), at_ns],
+        )?;
+        audit::append(
+            &tx,
+            "command.intent",
+            command_id,
+            &format!("{} -> {}", from.code(), to.code()),
+            at_ns,
         )?;
         tx.commit()?;
         Ok(())
@@ -381,6 +406,13 @@ impl CommandJournal {
             "INSERT INTO command_transitions (command_id, phase, from_state, to_state, at_ns, detail)
              VALUES (?1, 'result', ?2, ?3, ?4, ?5)",
             params![command_id, from.code(), to.code(), at_ns, detail],
+        )?;
+        audit::append(
+            &tx,
+            "command.result",
+            command_id,
+            &format!("{} -> {} {detail}", from.code(), to.code()),
+            at_ns,
         )?;
         tx.commit()?;
         Ok(to)
@@ -462,6 +494,13 @@ impl CommandJournal {
                             context.now_ns,
                             reason
                         ],
+                    )?;
+                    audit::append(
+                        &tx,
+                        "command.recovered",
+                        &command.id,
+                        &format!("{} -> {reason}", command.state.code()),
+                        context.now_ns,
                     )?;
                     next
                 }
@@ -562,5 +601,28 @@ fn decide(command: &Pending, context: &RecoveryContext) -> (Option<(State, &'sta
         State::ExecuteConfirmed => (None, Action::AwaitTermination),
         State::TerminationConfirmed => (None, Action::VerifyIfRequired),
         _ => (None, Action::Nothing),
+    }
+}
+
+impl CommandJournal {
+    /// Checks the audit chain. Returns the number of records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::AuditBroken`] at the first altered record.
+    pub fn verify_audit(&self) -> Result<u64, CommandError> {
+        audit::verify(&self.conn).map_err(|err| match err {
+            audit::VerifyError::Broken(broken) => CommandError::AuditBroken(broken.seq),
+            audit::VerifyError::Database(err) => CommandError::Database(err.to_string()),
+        })
+    }
+
+    /// The hash of the last audit record, to anchor outside the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::Database`] on a read failure.
+    pub fn audit_head(&self) -> Result<[u8; 32], CommandError> {
+        audit::head(&self.conn)
     }
 }
