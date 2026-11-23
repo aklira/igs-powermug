@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::identity::Granularity;
 use crate::state::State;
 
 /// The operating mode of the cell.
@@ -35,6 +36,9 @@ pub struct Grant {
     pub issuer: String,
     pub operations: Vec<String>,
     pub values: ValueRule,
+    /// The finest identity the grant can be checked against: an identity coarser than this
+    /// cannot prove the grant (GW 11.6).
+    pub min_level: Granularity,
 }
 
 /// The command value of a request.
@@ -49,6 +53,8 @@ pub enum Value {
 #[derive(Debug, Clone, Copy)]
 pub struct Request<'a> {
     pub issuer: &'a str,
+    /// The granularity of the identity the protocol gave for this command.
+    pub identity_level: Granularity,
     pub point: &'a str,
     pub operation: &'a str,
     pub value: Value,
@@ -126,6 +132,12 @@ pub fn authorize(acl: &Acl, mode: Mode, request: &Request<'_>) -> Result<(), Ref
             reason: "issuer not granted",
         });
     };
+    if request.identity_level < grant.min_level {
+        return Err(Refusal {
+            state: State::RejectedAuth,
+            reason: "identity level too coarse",
+        });
+    }
     if !grant
         .operations
         .iter()

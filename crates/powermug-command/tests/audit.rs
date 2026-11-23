@@ -2,6 +2,7 @@
 //! recorded, the chain verifies, and an altered record is found at its position.
 
 use powermug_command::audit::GENESIS;
+use powermug_command::Granularity;
 use powermug_command::{CommandError, CommandJournal, NewCommand, RecoveryContext, State};
 
 const T0: i64 = 1_000;
@@ -15,6 +16,7 @@ fn command(id: &str) -> NewCommand {
     NewCommand {
         command_id: id.into(),
         identity: "scada-demo".into(),
+        identity_level: Granularity::User,
         point: "S3/TC_101".into(),
         operation: "direct_execute".into(),
         value: "true".into(),

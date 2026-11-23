@@ -1,8 +1,8 @@
 //! Authorization of a command (SPECIFICATIONS 9.3, FUN-CMD-003, FUN-OPS-006, PM-CMD-005).
 
 use powermug_command::{
-    authorize, Acl, CommandJournal, Grant, Mode, NewCommand, Refusal, Request, State, Value,
-    ValueRule,
+    authorize, Acl, CommandJournal, Grant, Granularity, Mode, NewCommand, Refusal, Request, State,
+    Value, ValueRule,
 };
 
 fn acl() -> Acl {
@@ -13,6 +13,7 @@ fn acl() -> Acl {
             issuer: "scada-demo".into(),
             operations: vec!["direct_execute".into(), "select".into()],
             values: ValueRule::Bool,
+            min_level: Granularity::Link,
         },
     );
     acl.grant(
@@ -24,6 +25,7 @@ fn acl() -> Acl {
                 min: 0.0,
                 max: 100.0,
             },
+            min_level: Granularity::Link,
         },
     );
     acl
@@ -32,6 +34,7 @@ fn acl() -> Acl {
 fn request<'a>(issuer: &'a str, point: &'a str, operation: &'a str, value: Value) -> Request<'a> {
     Request {
         issuer,
+        identity_level: Granularity::User,
         point,
         operation,
         value,
@@ -175,6 +178,7 @@ fn a_refusal_is_recorded_as_a_terminal_state_in_the_journal() {
             &NewCommand {
                 command_id: "c1".into(),
                 identity: "intruder".into(),
+                identity_level: Granularity::User,
                 point: "S3/TC_101".into(),
                 operation: "direct_execute".into(),
                 value: "true".into(),

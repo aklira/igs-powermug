@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use thiserror::Error;
 
 use crate::audit;
+use crate::identity::Granularity;
 use crate::state::State;
 
 const SCHEMA: &str = "
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS commands (
     command_id        TEXT    PRIMARY KEY,
     state             TEXT    NOT NULL,
     identity          TEXT    NOT NULL,
+    identity_level    TEXT    NOT NULL,
     point             TEXT    NOT NULL,
     operation         TEXT    NOT NULL,
     value             TEXT    NOT NULL,
@@ -50,6 +52,8 @@ CREATE TABLE IF NOT EXISTS idempotency (
 pub struct NewCommand {
     pub command_id: String,
     pub identity: String,
+    /// The granularity of the identity the protocol gave (GW 11.6).
+    pub identity_level: crate::identity::Granularity,
     pub point: String,
     pub operation: String,
     /// The value, as the North adapter gave it (opaque to the journal).
@@ -250,14 +254,15 @@ impl CommandJournal {
         let epoch = i64::try_from(command.owner_epoch).unwrap_or(i64::MAX);
         let term = i64::try_from(command.ha_term).unwrap_or(i64::MAX);
         tx.execute(
-            "INSERT INTO commands (command_id, state, identity, point, operation, value,
-                                   expires_ns, expected_revision, owner_epoch, ha_term,
+            "INSERT INTO commands (command_id, state, identity, identity_level, point, operation,
+                                   value, expires_ns, expected_revision, owner_epoch, ha_term,
                                    created_ns, updated_ns)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
             params![
                 command.command_id,
                 State::Received.code(),
                 command.identity,
+                command.identity_level.code(),
                 command.point,
                 command.operation,
                 command.value,
@@ -286,6 +291,31 @@ impl CommandJournal {
         )?;
         tx.commit()?;
         Ok(Submission::Created)
+    }
+
+    /// The identity a command was recorded with, and its granularity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::Database`] on a read failure.
+    pub fn identity(
+        &self,
+        command_id: &str,
+    ) -> Result<Option<(String, Granularity)>, CommandError> {
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT identity, identity_level FROM commands WHERE command_id = ?1",
+                params![command_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(subject, code)| {
+            Granularity::from_code(&code)
+                .map(|level| (subject, level))
+                .ok_or(CommandError::UnknownState(code))
+        })
+        .transpose()
     }
 
     /// The state of a command, if it is in the journal.

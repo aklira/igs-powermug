@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 
+use powermug_command::Granularity;
 use powermug_command::{CommandWriter, NewCommand, State, Submission};
 
 const T0: i64 = 1_000;
@@ -13,6 +14,7 @@ fn command(id: &str) -> NewCommand {
     NewCommand {
         command_id: id.into(),
         identity: "scada-demo".into(),
+        identity_level: Granularity::User,
         point: "S3/TC_101".into(),
         operation: "direct_execute".into(),
         value: "true".into(),

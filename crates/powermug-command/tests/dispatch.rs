@@ -3,6 +3,7 @@
 
 use powermug_command::dispatch::{admit_submission, Dispatch, EpochGuard};
 use powermug_command::ownership::{Owner, Ownership};
+use powermug_command::Granularity;
 use powermug_command::{CommandJournal, NewCommand, State};
 
 const NOW: i64 = 1_000;
@@ -66,6 +67,7 @@ fn a_rejected_submission_is_recorded_in_the_journal() {
             &NewCommand {
                 command_id: "c1".into(),
                 identity: "scada-demo".into(),
+                identity_level: Granularity::User,
                 point: "S3/TC_101".into(),
                 operation: "direct_execute".into(),
                 value: "true".into(),

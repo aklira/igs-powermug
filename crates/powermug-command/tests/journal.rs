@@ -2,6 +2,7 @@
 //! transitions, intent before result, and the rules of a restart ([GW] 11.5).
 
 use powermug_command::journal::Phase;
+use powermug_command::Granularity;
 use powermug_command::{
     Action, CommandError, CommandJournal, NewCommand, RecoveryContext, State, Submission,
 };
@@ -13,6 +14,7 @@ fn command(id: &str, expires: i64) -> NewCommand {
     NewCommand {
         command_id: id.into(),
         identity: "scada-demo".into(),
+        identity_level: Granularity::User,
         point: "S3/TC_101".into(),
         operation: "direct_execute".into(),
         value: "true".into(),
