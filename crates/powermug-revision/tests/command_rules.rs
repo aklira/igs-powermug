@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 fn points() -> Value {
     json!([
         {"id": "S3/TM_001", "session": "s3-ca3", "address": 101, "class": "A"},
-        {"id": "S3/TC_101", "session": "s3-ca3", "address": 5, "class": "Critical"}
+        {"id": "S3/TC_101", "session": "s3-ca3", "address": 5, "class": "Critical", "commandable": true}
     ])
 }
 
@@ -65,7 +65,8 @@ fn a_rule_on_a_point_the_document_does_not_have_is_refused() {
     let mut unknown = rule();
     unknown["point"] = json!("S3/TC_999");
     let document = document("S3", 2404, points(), json!([unknown]));
-    assert_eq!(codes(&document), vec!["PMV-ACL-002"]);
+    // The commandable point of the document is left without its rule as well.
+    assert_eq!(codes(&document), vec!["PMV-ACL-001", "PMV-ACL-002"]);
 }
 
 #[test]
@@ -86,9 +87,40 @@ fn a_rule_with_an_unknown_operation_value_rule_or_level_is_refused() {
 }
 
 #[test]
-fn a_document_without_commands_has_no_commandable_point() {
-    let document = document("S3", 2404, points(), json!([]));
+fn a_document_without_commandable_points_needs_no_rule() {
+    let plain = json!([
+        {"id": "S3/TM_001", "session": "s3-ca3", "address": 101, "class": "A"},
+        {"id": "S3/TC_101", "session": "s3-ca3", "address": 5, "class": "Critical"}
+    ]);
+    let document = document("S3", 2404, plain, json!([]));
     assert_eq!(validate_stage2(&document), Vec::new());
+}
+
+#[test]
+fn a_commandable_point_without_a_rule_is_refused() {
+    let document = document("S3", 2404, points(), json!([]));
+    assert_eq!(codes(&document), vec!["PMV-ACL-001"]);
+}
+
+#[test]
+fn a_rule_on_a_point_that_is_not_commandable_is_refused() {
+    let plain = json!([
+        {"id": "S3/TM_001", "session": "s3-ca3", "address": 101, "class": "A"},
+        {"id": "S3/TC_101", "session": "s3-ca3", "address": 5, "class": "Critical"}
+    ]);
+    let document = document("S3", 2404, plain, json!([rule()]));
+    assert_eq!(codes(&document), vec!["PMV-ACL-002"]);
+}
+
+#[test]
+fn declaring_a_point_commandable_is_a_command_critical_change() {
+    let before_points = json!([
+        {"id": "S3/TM_001", "session": "s3-ca3", "address": 101, "class": "A"},
+        {"id": "S3/TC_101", "session": "s3-ca3", "address": 5, "class": "Critical"}
+    ]);
+    let before = revision(&document("S3", 2404, before_points, json!([])));
+    let after = revision(&document("S3", 2404, points(), json!([rule()])));
+    assert_eq!(change_class(&before, &after), ChangeClass::CommandCritical);
 }
 
 #[test]

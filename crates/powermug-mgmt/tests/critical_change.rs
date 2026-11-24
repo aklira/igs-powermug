@@ -67,6 +67,10 @@ impl CommandGateway for Events {
 /// A partition document of S3 with the given command rules, as a child of `parent`.
 fn with_rules(parent: Option<&str>, rules: Value) -> Value {
     let mut document = sealed_document("S3", parent, "A");
+    // A point with rules is the commandable point they grant (PMV-ACL-001, PMV-ACL-002).
+    if rules.as_array().is_some_and(|rules| !rules.is_empty()) {
+        document["spec"]["points"][0]["commandable"] = json!(true);
+    }
     document["spec"]["commands"] = rules;
     let id = partition_content_id(&document).expect("canonical");
     document["metadata"]["id"] = json!(id);

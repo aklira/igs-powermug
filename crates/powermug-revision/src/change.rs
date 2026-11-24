@@ -94,15 +94,35 @@ fn command_critical(previous: &PartitionRevision, next: &PartitionRevision) -> b
     {
         return true;
     }
-    let commandable: BTreeSet<&str> = previous
-        .spec
-        .commands
-        .iter()
-        .map(|rule| rule.point.as_str())
-        .collect();
-    commandable
+    // A point is commandable when it is declared so in either revision, or named by a rule.
+    let commandable: BTreeSet<&str> = [previous, next]
         .into_iter()
-        .any(|id| moved(point(previous, id), point(next, id)))
+        .flat_map(|revision| {
+            revision
+                .spec
+                .points
+                .iter()
+                .filter(|point| point.commandable)
+                .map(|point| point.id.as_str())
+                .chain(
+                    revision
+                        .spec
+                        .commands
+                        .iter()
+                        .map(|rule| rule.point.as_str()),
+                )
+        })
+        .collect();
+    commandable.into_iter().any(|id| {
+        moved(point(previous, id), point(next, id)) || declares_differently(previous, next, id)
+    })
+}
+
+/// Whether a point changed its commandability: declared commandable in one revision only.
+fn declares_differently(previous: &PartitionRevision, next: &PartitionRevision, id: &str) -> bool {
+    let commandable =
+        |revision: &PartitionRevision| point(revision, id).is_some_and(|point| point.commandable);
+    commandable(previous) != commandable(next)
 }
 
 fn point<'a>(revision: &'a PartitionRevision, id: &str) -> Option<&'a Point> {

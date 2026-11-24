@@ -139,6 +139,10 @@ pub struct Point {
     pub address: u32,
     /// `A`, `B`, `C` or `Critical` (§7.5).
     pub class: String,
+    /// Whether the point accepts commands. A commandable point needs an explicit rule
+    /// (PMV-ACL-001); a rule can name only a commandable point (PMV-ACL-002). Absent means no.
+    #[serde(default)]
+    pub commandable: bool,
 }
 
 const CLASSES: [&str; 4] = ["A", "B", "C", "Critical"];
@@ -354,21 +358,38 @@ pub fn validate_stage2(document: &Value) -> Vec<Finding> {
 /// Checks the command rules: each names a point of the document, and holds valid operations,
 /// value rule and identity level (`PMV-ACL-002` for an unknown point, `PMV-ACL-003` otherwise).
 fn check_commands(revision: &PartitionRevision, findings: &mut Vec<Finding>) {
-    let point_ids: std::collections::HashSet<&str> = revision
+    let commandable: std::collections::HashSet<&str> = revision
         .spec
         .points
         .iter()
+        .filter(|point| point.commandable)
         .map(|point| point.id.as_str())
         .collect();
+    let ruled: std::collections::HashSet<&str> = revision
+        .spec
+        .commands
+        .iter()
+        .map(|rule| rule.point.as_str())
+        .collect();
+    for (index, point) in revision.spec.points.iter().enumerate() {
+        if point.commandable && !ruled.contains(point.id.as_str()) {
+            push_finding(
+                findings,
+                "PMV-ACL-001",
+                format!("/spec/points/{index}"),
+                format!("the commandable point {} has no command rule", point.id),
+            );
+        }
+    }
     for (index, rule) in revision.spec.commands.iter().enumerate() {
         let pointer = format!("/spec/commands/{index}");
-        if !point_ids.contains(rule.point.as_str()) {
+        if !commandable.contains(rule.point.as_str()) {
             push_finding(
                 findings,
                 "PMV-ACL-002",
                 pointer.clone(),
                 format!(
-                    "the command rule names {}, which is not a point of the document",
+                    "the command rule names {}, which is not a commandable point of the document",
                     rule.point
                 ),
             );

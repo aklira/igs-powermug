@@ -124,6 +124,11 @@
           "description": "`A`, `B`, `C` or `Critical` (§7.5).",
           "type": "string"
         },
+        "commandable": {
+          "description": "Whether the point accepts commands. A commandable point needs an explicit rule\n(PMV-ACL-001); a rule can name only a commandable point (PMV-ACL-002). Absent means no.",
+          "type": "boolean",
+          "default": false
+        },
         "id": {
           "description": "Prefixed by the site, for example `S3/TM_001` (FUN-SCA-010).",
           "type": "string"
