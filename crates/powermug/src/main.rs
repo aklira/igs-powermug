@@ -3,7 +3,8 @@
 
 #![forbid(unsafe_code)]
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,6 +15,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::VerifyingKey;
 use powermug_adapter_iec104::{run as run_iec104, Settings};
+use powermug_command::audit::{verify_export, ExportedRecord, GENESIS};
+use powermug_command::CommandJournal;
 use powermug_revision::canonical::content_id;
 use powermug_revision::profile::powermug_v1;
 use powermug_revision::{
@@ -64,6 +67,34 @@ enum Cmd {
     Diag {
         #[command(subcommand)]
         action: DiagAction,
+    },
+    /// The command audit chain, outside the cell (NFR-SEC-008).
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuditAction {
+    /// Exports the chain of a critical store to a new file, one JSON record per line, and prints
+    /// the anchored head (the hash of the last record) to keep outside the store.
+    Export {
+        /// The critical store (`critical.db`) to export.
+        #[arg(long)]
+        critical_db: PathBuf,
+        /// The file to write. It must not exist: an export is never overwritten.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Verifies an exported chain on its own, against an anchored head when one is given.
+    Verify {
+        /// The export to verify.
+        #[arg(long)]
+        file: PathBuf,
+        /// The anchored head, as lowercase hex (64 characters), from the export or the store.
+        #[arg(long)]
+        anchor: Option<String>,
     },
 }
 
@@ -157,6 +188,10 @@ fn main() -> Result<()> {
             AdapterKind::Iec104 { settings } => iec104_adapter(&settings),
             AdapterKind::Fake { fault, seconds } => fake_adapter(fault, seconds),
         },
+        Cmd::Audit { action } => match action {
+            AuditAction::Export { critical_db, out } => audit_export(&critical_db, &out),
+            AuditAction::Verify { file, anchor } => audit_verify(&file, anchor.as_deref()),
+        },
         Cmd::Diag { action } => match action {
             DiagAction::Features => {
                 println!("{:#?}", features::probe());
@@ -169,6 +204,104 @@ fn main() -> Result<()> {
 fn read_strict(path: &Path) -> Result<serde_json::Value> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     parse_strict_json(&text).with_context(|| format!("loading {}", path.display()))
+}
+
+fn audit_export(critical_db: &Path, out: &Path) -> Result<()> {
+    if !critical_db.exists() {
+        bail!(
+            "{} does not exist: nothing to export",
+            critical_db.display()
+        );
+    }
+    let journal = CommandJournal::open(critical_db)
+        .with_context(|| format!("opening {}", critical_db.display()))?;
+    // One read: the records and their head are taken from the same chain.
+    let records = journal.export_audit()?;
+    let head = records.last().map_or(GENESIS, |record| record.hash);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out)
+        .with_context(|| format!("creating {} (it must not exist)", out.display()))?;
+    for record in &records {
+        writeln!(file, "{}", record_line(record))?;
+    }
+    file.sync_all()?;
+    println!("records: {}", records.len());
+    println!("head: {}", to_hex(&head));
+    Ok(())
+}
+
+fn record_line(record: &ExportedRecord) -> serde_json::Value {
+    serde_json::json!({
+        "seq": record.seq,
+        "at_ns": record.at_ns,
+        "kind": record.kind,
+        "subject": record.subject,
+        "payload": record.payload,
+        "prev_hash": to_hex(&record.prev_hash),
+        "hash": to_hex(&record.hash),
+    })
+}
+
+fn audit_verify(file: &Path, anchor: Option<&str>) -> Result<()> {
+    let text = fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+    let mut records = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        records
+            .push(parse_record(line).with_context(|| format!("{}:{}", file.display(), index + 1))?);
+    }
+    let anchor = anchor.map(from_hex).transpose()?;
+    let count = verify_export(&records, anchor)?;
+    println!("verified: {count} records");
+    Ok(())
+}
+
+fn parse_record(line: &str) -> Result<ExportedRecord> {
+    let value: serde_json::Value = serde_json::from_str(line).context("not a JSON record")?;
+    let text = |name: &str| -> Result<String> {
+        value[name]
+            .as_str()
+            .map(str::to_owned)
+            .with_context(|| format!("the record has no text field {name}"))
+    };
+    let number = |name: &str| -> Result<i64> {
+        value[name]
+            .as_i64()
+            .with_context(|| format!("the record has no integer field {name}"))
+    };
+    Ok(ExportedRecord {
+        seq: number("seq")?,
+        at_ns: number("at_ns")?,
+        kind: text("kind")?,
+        subject: text("subject")?,
+        payload: text("payload")?,
+        prev_hash: from_hex(&text("prev_hash")?)?,
+        hash: from_hex(&text("hash")?)?,
+    })
+}
+
+fn to_hex(bytes: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(64), |mut text, byte| {
+            let _ = write!(text, "{byte:02x}");
+            text
+        })
+}
+
+fn from_hex(text: &str) -> Result<[u8; 32]> {
+    if text.len() != 64 || !text.is_ascii() {
+        bail!("a hash is 64 lowercase hex characters, got {text:?}");
+    }
+    let mut bytes = [0_u8; 32];
+    for (index, pair) in text.as_bytes().chunks(2).enumerate() {
+        let digits = std::str::from_utf8(pair)?;
+        bytes[index] =
+            u8::from_str_radix(digits, 16).with_context(|| format!("{digits:?} is not hex"))?;
+    }
+    Ok(bytes)
 }
 
 fn revision_hash(file: &Path) -> Result<()> {
