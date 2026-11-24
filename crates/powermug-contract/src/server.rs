@@ -4,13 +4,14 @@ use std::future::Future;
 use std::sync::Arc;
 
 use tokio::net::UnixListener;
-use tokio::sync::Notify;
+use tokio::sync::{mpsc, Notify};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
 use crate::bounds::{MAX_BATCH_BYTES, MAX_HANDSHAKE_BYTES};
 use crate::proto::v1::{
     adapter_control_server::AdapterControlServer, adapter_data_server::AdapterDataServer,
+    CommandDispatch, CommandUpdate,
 };
 use crate::service::{CoreConfig, CoreService};
 use crate::sink::BatchSink;
@@ -62,4 +63,22 @@ async fn serve(
         .add_service(AdapterDataServer::new(service).max_decoding_message_size(MAX_BATCH_BYTES))
         .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
         .await
+}
+
+/// As [`serve_instance`], and the instance also serves commands: `dispatches` are sent to the
+/// adapter, and the adapter's updates are forwarded to `updates`.
+///
+/// # Errors
+///
+/// Returns the transport error when the server stops abnormally.
+pub async fn serve_instance_commanded(
+    config: CoreConfig,
+    sink: Box<dyn BatchSink>,
+    listener: UnixListener,
+    dispatches: mpsc::Receiver<CommandDispatch>,
+    updates: mpsc::UnboundedSender<CommandUpdate>,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), tonic::transport::Error> {
+    let service = CoreService::new(config, sink).with_commands(dispatches, updates);
+    serve(service, listener, shutdown).await
 }

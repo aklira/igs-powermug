@@ -18,8 +18,8 @@ use tower::service_fn;
 use crate::credit::{CreditError, CreditWindow};
 use crate::proto::v1::{
     adapter_control_client::AdapterControlClient, adapter_data_client::AdapterDataClient, AckBatch,
-    Capabilities, CommunicationAck, DeliveryAck, DeliveryBatch, EventBatch, HandshakeResponse,
-    HealthAck, HealthReport, InterrogateRequest,
+    Capabilities, CommandDispatch, CommandUpdate, CommunicationAck, DeliveryAck, DeliveryBatch,
+    EventBatch, HandshakeResponse, HealthAck, HealthReport, InterrogateRequest,
 };
 use powermug_pivot::proto::v1::CommunicationState;
 
@@ -270,6 +270,29 @@ pub async fn interrogate_state(
         envelopes.push(envelope);
     }
     Ok(envelopes)
+}
+
+/// Opens the command stream: the adapter sends its updates, and receives the dispatches.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Status`] when the core refuses the stream (no accepted handshake, or
+/// no command source for this instance).
+pub async fn execute_commands(
+    channel: Channel,
+) -> Result<
+    (
+        mpsc::Sender<CommandUpdate>,
+        tonic::Streaming<CommandDispatch>,
+    ),
+    ClientError,
+> {
+    let (updates, rx) = mpsc::channel::<CommandUpdate>(64);
+    let dispatches = AdapterDataClient::new(channel)
+        .execute_commands(ReceiverStream::new(rx))
+        .await?
+        .into_inner();
+    Ok((updates, dispatches))
 }
 
 /// Opens the North subscription: the core sends its numbered batches, and the

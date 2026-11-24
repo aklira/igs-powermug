@@ -162,6 +162,55 @@ service AdapterData {
   // batch and sends at most a window of unacknowledged batches; the adapter
   // acknowledges a batch once it has applied it.
   rpc PublishEvents(stream DeliveryAck) returns (stream DeliveryBatch);
+  // South: commands from the core, and the adapter's answers to them. The core sends one
+  // dispatch per command; the adapter answers each with updates. A command still unanswered
+  // when the stream ends is in doubt on the core, and is not replayed (PM-CMD-002).
+  rpc ExecuteCommands(stream CommandUpdate) returns (stream CommandDispatch);
+}
+
+// The kind of a command, as the station executes it.
+enum CommandKind {
+  COMMAND_KIND_UNSPECIFIED = 0;
+  SINGLE = 1;
+  DOUBLE = 2;
+  REGULATING_STEP = 3;
+}
+
+// A command for one object of a station, with the owner epoch it was dispatched under
+// (PM-CMD-005) and its expiry (PM-CMD-004).
+message CommandDispatch {
+  string command_id = 1;
+  uint32 address = 2;
+  CommandKind kind = 3;
+  // ON or OFF for single and double commands; higher or lower for a regulating step.
+  bool on = 4;
+  // Select (true) or execute (false), for select-before-operate.
+  bool select = 5;
+  uint64 owner_epoch = 6;
+  int64 expires_ns = 7;
+}
+
+// What happened to a command, as the adapter reports it.
+enum CommandStatus {
+  COMMAND_STATUS_UNSPECIFIED = 0;
+  // Not emitted: the station was never called. The command is where it was.
+  NOT_SENT = 1;
+  // The station confirmed the activation.
+  CONFIRMED = 2;
+  // The station ended the activation.
+  TERMINATED = 3;
+  // The station refused the command.
+  REFUSED = 4;
+  // The command expired before its emission.
+  EXPIRED = 5;
+}
+
+// An adapter's report on one command.
+message CommandUpdate {
+  string command_id = 1;
+  CommandStatus status = 2;
+  // Bounded text, for NOT_SENT and REFUSED.
+  string reason = 3;
 }
 
 // Asks for the state of one session.

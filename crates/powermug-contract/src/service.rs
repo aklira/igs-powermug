@@ -23,8 +23,8 @@ use crate::handshake::{self, Offer, API_VERSION};
 use crate::peer::{self, ExpectedPeer, PeerCredentials};
 use crate::proto::v1::{
     adapter_control_server::AdapterControl, adapter_data_server::AdapterData, AckBatch, AckStatus,
-    Capabilities, CommunicationAck, DeliveryAck, DeliveryBatch, EventBatch, HandshakeResponse,
-    HealthAck, HealthReport, InterrogateRequest,
+    Capabilities, CommandDispatch, CommandUpdate, CommunicationAck, DeliveryAck, DeliveryBatch,
+    EventBatch, HandshakeResponse, HealthAck, HealthReport, InterrogateRequest,
 };
 use crate::sink::{BatchSink, Durability, Refusal};
 use powermug_pivot::proto::v1::CommunicationState;
@@ -59,6 +59,10 @@ pub struct CoreService {
     sink: Arc<Mutex<Box<dyn BatchSink>>>,
     /// Notified on every accepted health report, if the owner watches them.
     heartbeat: Option<Arc<Notify>>,
+    /// The dispatches to send to the adapter. Taken by the first `ExecuteCommands` call.
+    dispatches: Arc<Mutex<Option<mpsc::Receiver<CommandDispatch>>>>,
+    /// Where the adapter's updates go.
+    updates: Option<mpsc::UnboundedSender<CommandUpdate>>,
 }
 
 impl CoreService {
@@ -69,7 +73,21 @@ impl CoreService {
             accepted: Arc::new(Mutex::new(None)),
             sink: Arc::new(Mutex::new(sink)),
             heartbeat: None,
+            dispatches: Arc::new(Mutex::new(None)),
+            updates: None,
         }
+    }
+
+    /// Serves commands: `dispatches` are sent to the adapter, and its updates go to `updates`.
+    #[must_use]
+    pub fn with_commands(
+        mut self,
+        dispatches: mpsc::Receiver<CommandDispatch>,
+        updates: mpsc::UnboundedSender<CommandUpdate>,
+    ) -> Self {
+        self.dispatches = Arc::new(Mutex::new(Some(dispatches)));
+        self.updates = Some(updates);
+        self
     }
 
     /// Notifies `heartbeat` on every health report of the instance (§6.3).
@@ -344,6 +362,54 @@ impl AdapterData for CoreService {
                 let _ = window.grant(events);
                 if tx.send(Ok(reply)).await.is_err() {
                     return;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    type ExecuteCommandsStream = ReceiverStream<Result<CommandDispatch, Status>>;
+
+    async fn execute_commands(
+        &self,
+        request: Request<Streaming<CommandUpdate>>,
+    ) -> Result<Response<Self::ExecuteCommandsStream>, Status> {
+        authenticate(&request, self.config.expected_peer)?;
+        self.accepted().ok_or_else(|| {
+            Status::failed_precondition("no accepted handshake for this instance")
+        })?;
+        let dispatches = self
+            .dispatches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| Status::failed_precondition("this instance serves no commands"))?;
+        let updates = self
+            .updates
+            .clone()
+            .ok_or_else(|| Status::failed_precondition("this instance serves no commands"))?;
+        let mut inbound = request.into_inner();
+        let (tx, rx) = mpsc::channel(16);
+        let mut dispatches = dispatches;
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    update = inbound.message() => match update {
+                        Ok(Some(update)) => {
+                            if updates.send(update).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) | Err(_) => return,
+                    },
+                    dispatch = dispatches.recv() => match dispatch {
+                        Some(dispatch) => {
+                            if tx.send(Ok(dispatch)).await.is_err() {
+                                return;
+                            }
+                        }
+                        None => return,
+                    },
                 }
             }
         });
