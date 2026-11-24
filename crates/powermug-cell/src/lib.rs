@@ -236,7 +236,7 @@ pub async fn serve(
         })
         .collect();
 
-    let app = powermug_mgmt::router(Arc::clone(&cell.api));
+    let app = powermug_mgmt::service(Arc::clone(&cell.api));
     let stopping = stop.clone();
     let served = axum::serve(TlsListener::new(listener, tls), app)
         .with_graceful_shutdown(async move {

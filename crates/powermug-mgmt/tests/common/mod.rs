@@ -9,13 +9,15 @@ use std::sync::Arc;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
-use powermug_mgmt::{router, server_config, Api, TlsListener};
+use powermug_mgmt::{server_config, service, Api, TlsListener};
 use powermug_revision::canonical::{canonical_bytes, content_id, sha256_hex};
 use powermug_revision::partition::partition_content_id;
 use powermug_revision::profile::powermug_v1;
 use powermug_revision::signed::key_id;
 use powermug_store::CriticalStore;
-use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
+use rcgen::{
+    BasicConstraints, CertificateParams, CertifiedIssuer, DistinguishedName, DnType, IsCa, KeyPair,
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig, RootCertStore};
 use serde_json::{json, Value};
@@ -34,6 +36,12 @@ pub struct Pki {
 }
 
 pub fn pki() -> Pki {
+    pki_with_client_subject(Some("client"))
+}
+
+/// The certificates of a test, with a client certificate whose common name is
+/// `common_name`; `None` gives a client certificate with no subject at all.
+pub fn pki_with_client_subject(common_name: Option<&str>) -> Pki {
     let ca_key = KeyPair::generate().expect("key");
     let mut ca_params = CertificateParams::new(vec!["powermug-test-ca".into()]).expect("params");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -46,8 +54,14 @@ pub fn pki() -> Pki {
         .expect("server certificate");
 
     let client_key = KeyPair::generate().expect("key");
-    let client = CertificateParams::new(vec!["client".into()])
-        .expect("params")
+    let mut client_params = CertificateParams::new(vec!["client".into()]).expect("params");
+    client_params.distinguished_name = DistinguishedName::new();
+    if let Some(common_name) = common_name {
+        client_params
+            .distinguished_name
+            .push(DnType::CommonName, common_name);
+    }
+    let client = client_params
         .signed_by(&client_key, &ca)
         .expect("client certificate");
 
@@ -123,7 +137,7 @@ pub async fn serve_with_gateway(
         .with_commands(gateway),
     );
     tokio::spawn(async move {
-        let _ = axum::serve(TlsListener::new(listener, config), router(api)).await;
+        let _ = axum::serve(TlsListener::new(listener, config), service(api)).await;
     });
     address
 }
@@ -160,7 +174,7 @@ pub async fn serve_with(
         command_client(),
     ));
     tokio::spawn(async move {
-        let _ = axum::serve(TlsListener::new(listener, config), router(api)).await;
+        let _ = axum::serve(TlsListener::new(listener, config), service(api)).await;
     });
     address
 }

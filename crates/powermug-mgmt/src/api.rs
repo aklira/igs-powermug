@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::commands::{CommandGateway, CommandRequest, GatewayError};
-use axum::extract::{Path, State};
+use crate::tls::ClientIdentity;
+use axum::extract::connect_info::IntoMakeServiceWithConnectInfo;
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -78,7 +80,14 @@ impl std::fmt::Debug for Api {
     }
 }
 
-/// The routes of the subset.
+/// The service to serve over mutual TLS: the routes, with the identity of each connection's
+/// client available to the handlers (`ConnectInfo<ClientIdentity>`).
+pub fn service(api: Arc<Api>) -> IntoMakeServiceWithConnectInfo<Router, ClientIdentity> {
+    router(api).into_make_service_with_connect_info::<ClientIdentity>()
+}
+
+/// The routes of the subset. A handler that reads the client's identity needs the service of
+/// [`service`], which serves the connection's identity with the routes.
 pub fn router(api: Arc<Api>) -> Router {
     Router::new()
         .route("/capabilities", get(capabilities))
@@ -510,6 +519,7 @@ const DEFAULT_LIFETIME_NS: i64 = 30_000_000_000;
 /// with the adapter's answers.
 async fn command_submit(
     State(api): State<Arc<Api>>,
+    ConnectInfo(client): ConnectInfo<ClientIdentity>,
     Json(body): Json<CommandBody>,
 ) -> Result<Json<Value>, ApiError> {
     let Some(gateway) = api.gateway.as_ref() else {
@@ -536,11 +546,12 @@ async fn command_submit(
             ),
         ));
     }
+    let identity = issuer_of(&client)?;
     let now = now_ns();
-    // The certificate's subject is not read yet: the issuer is the mTLS client, per client (GW 11.6).
+    // The issuer is the common name of the client certificate, at client granularity (GW 11.6).
     let request = CommandRequest {
         command_id: body.command_id.clone(),
-        identity: "mtls-client".into(),
+        identity: identity.to_owned(),
         identity_level: Granularity::Client,
         point: body.point,
         operation: body.operation,
@@ -553,6 +564,18 @@ async fn command_submit(
         "command_id": body.command_id,
         "state": state.code(),
     })))
+}
+
+/// The identity a command is issued under: the client's common name. A certificate without a
+/// common name cannot issue a command.
+fn issuer_of(client: &ClientIdentity) -> Result<&str, ApiError> {
+    client.common_name().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "unidentified_client",
+            "the client certificate has no common name, so it cannot issue a command",
+        )
+    })
 }
 
 fn now_ns() -> i64 {
@@ -574,6 +597,7 @@ struct ExecuteBody {
 /// execution is sent, and its state moves on with the adapter's answers.
 async fn command_execute(
     State(api): State<Arc<Api>>,
+    ConnectInfo(client): ConnectInfo<ClientIdentity>,
     Path(command_id): Path<String>,
     Json(body): Json<ExecuteBody>,
 ) -> Result<Json<Value>, ApiError> {
@@ -584,7 +608,8 @@ async fn command_execute(
             "this cell serves no commands",
         ));
     };
-    let state = gateway.execute(&command_id, &body.point, now_ns())?;
+    let identity = issuer_of(&client)?;
+    let state = gateway.execute(&command_id, &body.point, identity, now_ns())?;
     Ok(Json(json!({
         "command_id": command_id,
         "state": state.code(),

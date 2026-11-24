@@ -5,8 +5,9 @@ pub mod api;
 pub mod commands;
 pub mod tls;
 
-pub use api::{router, Api, ApiError};
+pub use api::{router, service, Api, ApiError};
 pub use commands::{CommandGateway, CommandRequest, GatewayError};
 pub use tls::{
-    load_trusted_key, server_config, KeyError, TlsError, TlsListener, HANDSHAKE_TIMEOUT,
+    load_trusted_key, server_config, ClientIdentity, KeyError, TlsError, TlsListener,
+    HANDSHAKE_TIMEOUT,
 };

@@ -15,6 +15,7 @@ use serde_json::Value as Json;
 #[derive(Default)]
 struct Recorder {
     received: Mutex<Vec<CommandRequest>>,
+    executed_by: Mutex<Vec<String>>,
 }
 
 impl CommandGateway for Recorder {
@@ -27,7 +28,17 @@ impl CommandGateway for Recorder {
         }
     }
 
-    fn execute(&self, command_id: &str, point: &str, _now_ns: i64) -> Result<State, GatewayError> {
+    fn execute(
+        &self,
+        command_id: &str,
+        point: &str,
+        identity: &str,
+        _now_ns: i64,
+    ) -> Result<State, GatewayError> {
+        self.executed_by
+            .lock()
+            .expect("lock")
+            .push(identity.to_owned());
         if point != "S3/TC_101" {
             return Err(GatewayError::UnknownPoint(point.to_owned()));
         }
@@ -40,8 +51,8 @@ impl CommandGateway for Recorder {
 }
 
 impl Recorder {
-    fn executed(&self) -> usize {
-        self.received.lock().expect("lock").len()
+    fn executed_by(&self) -> Vec<String> {
+        self.executed_by.lock().expect("lock").clone()
     }
 }
 
@@ -206,6 +217,58 @@ async fn a_selected_command_is_executed_through_the_gateway_and_refusals_are_ans
     assert_eq!(status, 404);
     assert_eq!(body(&text)["error"], "unknown_command");
 
-    // The recorder counts submissions only: no submission was made here.
-    assert_eq!(gateway.executed(), 0);
+    // The execution is issued under the common name of the client certificate, for each call
+    // that reached the gateway.
+    assert_eq!(gateway.executed_by(), vec!["client"; 3]);
+}
+
+#[tokio::test]
+async fn a_command_is_issued_under_the_common_name_of_the_client_certificate() {
+    let pki = pki();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gateway = Arc::new(Recorder::default());
+    let address = serve_with_gateway(
+        &pki,
+        empty_store(&dir),
+        signing_key(1).verifying_key(),
+        gateway.clone(),
+    )
+    .await;
+    let (status, _) = request(
+        address,
+        client_with_certificate(&pki),
+        "POST",
+        "/commands",
+        r#"{"command_id": "c2", "point": "S3/TC_101", "operation": "direct_execute", "value": false}"#,
+    )
+    .await
+    .expect("answers");
+    assert_eq!(status, 200);
+    assert_eq!(gateway.received.lock().expect("lock")[0].identity, "client");
+}
+
+#[tokio::test]
+async fn a_client_certificate_without_a_common_name_cannot_issue_a_command() {
+    let pki = pki_with_client_subject(None);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gateway = Arc::new(Recorder::default());
+    let address = serve_with_gateway(
+        &pki,
+        empty_store(&dir),
+        signing_key(1).verifying_key(),
+        gateway.clone(),
+    )
+    .await;
+    let (status, text) = request(
+        address,
+        client_with_certificate(&pki),
+        "POST",
+        "/commands",
+        r#"{"command_id": "c3", "point": "S3/TC_101", "operation": "direct_execute", "value": true}"#,
+    )
+    .await
+    .expect("answers");
+    assert_eq!(status, 401);
+    assert_eq!(body(&text)["error"], "unidentified_client");
+    assert!(gateway.received.lock().expect("lock").is_empty());
 }

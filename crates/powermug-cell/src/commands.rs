@@ -78,8 +78,9 @@ impl CommandRoute {
 }
 
 /// What the dispatcher knows of a command it dispatched, to send its execution later.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Known {
+    identity: String,
     address: u32,
     kind: pb::CommandKind,
     on: bool,
@@ -189,6 +190,7 @@ impl Dispatcher {
         self.known.insert(
             request.command_id.clone(),
             Known {
+                identity: request.identity.clone(),
                 address: request.address,
                 kind: request.kind,
                 on: request.on,
@@ -227,9 +229,27 @@ impl Dispatcher {
     /// # Errors
     ///
     /// Returns the journal's error: the command must be `SELECT_CONFIRMED`.
-    pub fn execute(&mut self, command_id: &str, now_ns: i64) -> Result<State, CommandError> {
-        if !self.known.contains_key(command_id) {
-            return Err(CommandError::UnknownCommand(command_id.to_owned()));
+    ///
+    /// Only the identity that submitted the command may execute it: the execution is not a new
+    /// authorization, so another identity is refused (SPECIFICATIONS 9.3).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::UnknownCommand`] for a command this dispatcher does not know,
+    /// [`CommandError::OtherIdentity`] for one submitted by another identity, and the
+    /// journal's error otherwise.
+    pub fn execute(
+        &mut self,
+        command_id: &str,
+        identity: &str,
+        now_ns: i64,
+    ) -> Result<State, CommandError> {
+        let known = self
+            .known
+            .get(command_id)
+            .ok_or_else(|| CommandError::UnknownCommand(command_id.to_owned()))?;
+        if known.identity != identity {
+            return Err(CommandError::OtherIdentity(command_id.to_owned()));
         }
         self.emit(command_id, State::ExecuteSent, false, now_ns)
     }
@@ -243,9 +263,10 @@ impl Dispatcher {
         select: bool,
         now_ns: i64,
     ) -> Result<State, CommandError> {
-        let known = *self
+        let known = self
             .known
             .get(command_id)
+            .cloned()
             .ok_or_else(|| CommandError::UnknownCommand(command_id.to_owned()))?;
         let emission = Emission::begin(&self.journal, command_id, to, now_ns)?;
         let message = pb::CommandDispatch {
@@ -426,6 +447,7 @@ impl powermug_mgmt::CommandGateway for Gateway {
         &self,
         command_id: &str,
         point: &str,
+        identity: &str,
         now_ns: i64,
     ) -> Result<State, powermug_mgmt::GatewayError> {
         let route = self
@@ -437,12 +459,13 @@ impl powermug_mgmt::CommandGateway for Gateway {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         dispatcher
-            .execute(command_id, now_ns)
+            .execute(command_id, identity, now_ns)
             .map_err(|err| match err {
                 CommandError::UnknownCommand(id) => powermug_mgmt::GatewayError::UnknownCommand(id),
                 CommandError::IllegalTransition { .. }
                 | CommandError::NoOpenIntent(..)
-                | CommandError::IntentOpen(_) => {
+                | CommandError::IntentOpen(_)
+                | CommandError::OtherIdentity(_) => {
                     powermug_mgmt::GatewayError::Refused(err.to_string())
                 }
                 other => powermug_mgmt::GatewayError::Journal(other.to_string()),

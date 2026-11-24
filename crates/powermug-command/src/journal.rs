@@ -113,6 +113,8 @@ pub enum CommandError {
     IntentOpen(String),
     #[error("command {0} has no open intent to {1}")]
     NoOpenIntent(String, &'static str),
+    #[error("command {0} was submitted by another identity")]
+    OtherIdentity(String),
     #[error("the journal holds an unknown state {0}")]
     UnknownState(String),
     #[error("the audit chain breaks at record {0}")]

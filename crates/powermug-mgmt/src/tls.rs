@@ -6,10 +6,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::connect_info::Connected;
+use axum::serve::IncomingStream;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
-use rustls::{RootCertStore, ServerConfig};
+use rustls::{RootCertStore, ServerConfig, ServerConnection};
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::server::TlsStream;
@@ -83,6 +85,48 @@ impl std::fmt::Debug for TlsListener {
         f.debug_struct("TlsListener")
             .field("tcp", &self.tcp)
             .finish_non_exhaustive()
+    }
+}
+
+/// The identity of the client of a connection: the common name of the certificate it
+/// presented in the handshake. A request reads it through `ConnectInfo<ClientIdentity>`.
+/// The common name is `None` when the certificate has none, or when no certificate was
+/// presented (the client verifier requires one, so that is not expected).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientIdentity(Option<String>);
+
+impl ClientIdentity {
+    /// The common name of the client's certificate.
+    #[must_use]
+    pub fn common_name(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+
+    fn from_connection(connection: &ServerConnection) -> Self {
+        let common_name = connection
+            .peer_certificates()
+            .and_then(|chain| chain.first())
+            .and_then(|leaf| common_name_of(leaf.as_ref()));
+        Self(common_name)
+    }
+}
+
+/// The first common name of a DER certificate's subject.
+fn common_name_of(der: &[u8]) -> Option<String> {
+    let (_, certificate) = x509_parser::parse_x509_certificate(der).ok()?;
+    let name = certificate
+        .subject()
+        .iter_common_name()
+        .next()?
+        .as_str()
+        .ok()?;
+    Some(name.to_owned())
+}
+
+impl Connected<IncomingStream<'_, TlsListener>> for ClientIdentity {
+    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
+        let (_, connection) = stream.io().get_ref();
+        Self::from_connection(connection)
     }
 }
 

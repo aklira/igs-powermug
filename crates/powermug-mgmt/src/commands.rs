@@ -44,12 +44,20 @@ pub trait CommandGateway: Send + Sync {
     /// [`GatewayError::Journal`] when the journal fails.
     fn submit(&self, request: &CommandRequest, now_ns: i64) -> Result<State, GatewayError>;
 
-    /// Executes a command selected earlier, once its selection is confirmed.
+    /// Executes a command selected earlier, once its selection is confirmed. Only the identity
+    /// that submitted the command may execute it.
     ///
     /// # Errors
     ///
     /// Returns [`GatewayError::UnknownPoint`] for a point the cell does not route,
     /// [`GatewayError::UnknownCommand`] for an unknown command, and
-    /// [`GatewayError::Refused`] when the command cannot be executed now.
-    fn execute(&self, command_id: &str, point: &str, now_ns: i64) -> Result<State, GatewayError>;
+    /// [`GatewayError::Refused`] when the command cannot be executed now, or when it was
+    /// submitted by another identity.
+    fn execute(
+        &self,
+        command_id: &str,
+        point: &str,
+        identity: &str,
+        now_ns: i64,
+    ) -> Result<State, GatewayError>;
 }

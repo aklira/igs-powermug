@@ -5,7 +5,7 @@
 use powermug_cell::commands::{channel, CommandRoute, Dispatcher, Request};
 use powermug_command::authorization::{Acl, Grant, ValueRule};
 use powermug_command::ownership::Ownership;
-use powermug_command::{CommandWriter, Granularity, State};
+use powermug_command::{CommandError, CommandWriter, Granularity, State};
 use powermug_contract::proto::v1 as pb;
 
 fn acl() -> Acl {
@@ -140,7 +140,9 @@ fn a_selected_command_waits_for_its_execution_and_is_then_terminated() {
         Some(State::SelectConfirmed)
     );
     assert_eq!(
-        h.dispatcher.execute("c1", 30).expect("executes"),
+        h.dispatcher
+            .execute("c1", "scada-demo", 30)
+            .expect("executes"),
         State::SelectConfirmed
     );
     assert!(!h.dispatches.try_recv().expect("execute dispatched").select);
@@ -274,4 +276,29 @@ fn the_activation_epoch_is_the_owner_epoch_and_zero_without_a_confirmed_owner() 
     drop(dispatcher);
     drop(ceding);
     writer.join();
+}
+
+#[test]
+fn an_execution_by_another_identity_is_refused_and_the_selection_stays_confirmed() {
+    let mut h = harness(owned());
+    h.dispatcher
+        .submit(&request("c1", true), 10)
+        .expect("submits");
+    h.dispatches.try_recv().expect("select dispatched");
+    h.dispatcher
+        .update(&answer("c1", pb::CommandStatus::Confirmed), 20)
+        .expect("updates");
+
+    assert_eq!(
+        h.dispatcher.execute("c1", "intruder", 30),
+        Err(CommandError::OtherIdentity("c1".into()))
+    );
+    assert!(h.dispatches.try_recv().is_err(), "nothing is sent");
+    assert_eq!(
+        h.dispatcher
+            .execute("c1", "scada-demo", 40)
+            .expect("executes"),
+        State::SelectConfirmed
+    );
+    h.finish();
 }
