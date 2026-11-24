@@ -404,28 +404,90 @@ async fn prepare(
     })))
 }
 
+/// Whether activating `verified` changes the commands of its partition in a way that blocks them
+/// (`COMMAND_CRITICAL`, FUN-CFG-007): the class of the change against the revision now active in
+/// its scope. Nothing active yet, or the same revision, is not a change.
+fn command_critical_change(api: &Api, verified: &Verified) -> Result<bool, ApiError> {
+    let Some(previous_id) = api.store().active(&verified.scope)? else {
+        return Ok(false);
+    };
+    if previous_id == verified.id {
+        return Ok(false);
+    }
+    let stored = api.store().body(&previous_id)?.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "missing_revision",
+            format!("the active revision {previous_id} has no stored body"),
+        )
+    })?;
+    let previous_document: Value = serde_json::from_slice(&stored).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "stored_revision_unreadable",
+            err.to_string(),
+        )
+    })?;
+    let before = powermug_revision::partition::parse(&previous_document).map_err(|finding| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "stored_revision_unreadable",
+            finding.message,
+        )
+    })?;
+    let after = powermug_revision::partition::parse(&verified.document).map_err(|finding| {
+        ApiError::new(StatusCode::BAD_REQUEST, "invalid_document", finding.message)
+    })?;
+    Ok(powermug_revision::change::change_class(&before, &after)
+        == powermug_revision::change::ChangeClass::CommandCritical)
+}
+
 async fn activate(
     State(api): State<Arc<Api>>,
     Json(request): Json<PlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let verified = verified(&api, &request)?;
-    let outcome = api
-        .store()
-        .activate(&verified.id, &verified.scope)
-        .map_err(|err| match err {
-            GenerationError::UnknownRevision(_) => ApiError::new(
-                StatusCode::CONFLICT,
-                "not_prepared",
-                "the revision is not prepared",
-            ),
-            other => ApiError::from(other),
-        })?;
+    let critical = command_critical_change(&api, &verified)?;
+    let gateway = api.gateway.as_deref();
+    if critical {
+        if let Some(gateway) = gateway {
+            gateway.begin_critical_change(&verified.scope);
+        }
+    }
+    let outcome = match api.store().activate(&verified.id, &verified.scope) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            if critical {
+                if let Some(gateway) = gateway {
+                    gateway.abort_critical_change(&verified.scope);
+                }
+            }
+            return Err(match err {
+                GenerationError::UnknownRevision(_) => ApiError::new(
+                    StatusCode::CONFLICT,
+                    "not_prepared",
+                    "the revision is not prepared",
+                ),
+                other => ApiError::from(other),
+            });
+        }
+    };
     let status = match outcome {
         Outcome::Changed => "ACTIVE",
         Outcome::Unchanged => "ALREADY_ACTIVE",
     };
-    let active = api.store().active(&verified.scope)?;
-    if let Some(gateway) = api.gateway.as_ref() {
+    let active = match api.store().active(&verified.scope) {
+        Ok(active) => active,
+        Err(err) => {
+            if critical {
+                if let Some(gateway) = gateway {
+                    gateway.abort_critical_change(&verified.scope);
+                }
+            }
+            return Err(ApiError::from(err));
+        }
+    };
+    if let Some(gateway) = gateway {
         gateway.active_revision_changed(&verified.scope, active.as_deref());
     }
     Ok(Json(json!({

@@ -188,3 +188,63 @@ fn an_activation_moves_the_partition_to_the_revision_its_commands_cite() {
     drop(journal);
     writer.join();
 }
+
+#[test]
+fn a_critical_change_blocks_the_partition_until_it_takes_effect_or_is_aborted() {
+    let config = CellConfig::from_json(CONFIG).expect("valid");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (journal, writer) = CommandWriter::spawn(dir.path().join("critical.db")).expect("spawns");
+    let mut ownership = Ownership::new();
+    ownership.takeover("S3");
+    let route = CommandRoute::new();
+    let (to_adapter, _queued) = channel(8);
+    route.attach(to_adapter);
+    let mut dispatcher = Dispatcher::new(
+        journal.clone(),
+        acl_of(&config.commands),
+        ownership,
+        route.clone(),
+    );
+    dispatcher.set_active_revision(Some("r1".into()));
+    let mut routes = BTreeMap::new();
+    routes.insert(
+        "S3/TC_101".to_owned(),
+        Route {
+            dispatcher: Arc::new(Mutex::new(dispatcher)),
+            partition: "S3".to_owned(),
+            address: 5,
+        },
+    );
+    let gateway = Gateway::new(routes);
+
+    gateway.begin_critical_change("S3");
+    assert_eq!(
+        gateway
+            .submit(&command("scada-demo", "S3/TC_101", "c1"), 10)
+            .expect("submits"),
+        State::RejectedUnavailable
+    );
+
+    gateway.abort_critical_change("S3");
+    assert_eq!(
+        gateway
+            .submit(&command("scada-demo", "S3/TC_101", "c2"), 20)
+            .expect("submits"),
+        State::Ready
+    );
+
+    // The change takes effect: the new revision is active and resumes the commands.
+    gateway.begin_critical_change("S3");
+    gateway.active_revision_changed("S3", Some("r2"));
+    let mut citing_new = command("scada-demo", "S3/TC_101", "c3");
+    citing_new.expected_revision = "r2".into();
+    assert_eq!(
+        gateway.submit(&citing_new, 30).expect("submits"),
+        State::Ready
+    );
+
+    drop(gateway);
+    drop(route);
+    drop(journal);
+    writer.join();
+}

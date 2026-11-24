@@ -491,18 +491,47 @@ impl Gateway {
     }
 }
 
+impl Gateway {
+    /// The routes of a partition: each commandable point of it.
+    fn partition_routes<'a>(&'a self, partition: &'a str) -> impl Iterator<Item = &'a Route> + 'a {
+        self.routes
+            .values()
+            .filter(move |route| route.partition == partition)
+    }
+}
+
 impl powermug_mgmt::CommandGateway for Gateway {
     fn active_revision_changed(&self, partition: &str, revision: Option<&str>) {
-        for route in self
-            .routes
-            .values()
-            .filter(|route| route.partition == partition)
-        {
+        for route in self.partition_routes(partition) {
+            let mut dispatcher = route
+                .dispatcher
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            dispatcher.set_active_revision(revision.map(str::to_owned));
+            dispatcher.unblock();
+        }
+    }
+
+    fn begin_critical_change(&self, partition: &str) {
+        let now = now_ns();
+        for route in self.partition_routes(partition) {
+            let mut dispatcher = route
+                .dispatcher
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Err(err) = dispatcher.block(now) {
+                eprintln!("powermug-cell: the commands of {partition} are not blocked: {err}");
+            }
+        }
+    }
+
+    fn abort_critical_change(&self, partition: &str) {
+        for route in self.partition_routes(partition) {
             route
                 .dispatcher
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .set_active_revision(revision.map(str::to_owned));
+                .unblock();
         }
     }
 
@@ -565,4 +594,14 @@ impl powermug_mgmt::CommandGateway for Gateway {
                 other => powermug_mgmt::GatewayError::Journal(other.to_string()),
             })
     }
+}
+
+/// The wall-clock time in nanoseconds since the epoch.
+fn now_ns() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos()),
+    )
+    .unwrap_or(i64::MAX)
 }

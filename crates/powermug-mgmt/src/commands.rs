@@ -64,4 +64,13 @@ pub trait CommandGateway: Send + Sync {
     /// The active revision of a partition changed by an activation or a rollback: `revision` is
     /// the content identifier now active, or `None`. The commands of the partition must cite it.
     fn active_revision_changed(&self, _partition: &str, _revision: Option<&str>) {}
+
+    /// An activation that is critical for commands starts (FUN-CFG-007): the commands of the
+    /// partition are blocked and the ones in flight classified, until the revision is active
+    /// (`active_revision_changed`) or the activation fails (`abort_critical_change`).
+    fn begin_critical_change(&self, _partition: &str) {}
+
+    /// The critical activation did not take effect: the commands of the partition resume on the
+    /// revision that was active.
+    fn abort_critical_change(&self, _partition: &str) {}
 }

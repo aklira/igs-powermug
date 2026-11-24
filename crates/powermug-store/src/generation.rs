@@ -255,6 +255,22 @@ impl CriticalStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The stored body of a prepared revision: the canonical bytes of its document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationError::Database`] when the read fails.
+    pub fn body(&self, id: &str) -> Result<Option<Vec<u8>>, GenerationError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT body FROM revisions WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// The scope, lifecycle state and parent of a revision, if it is known.
     ///
     /// # Errors
