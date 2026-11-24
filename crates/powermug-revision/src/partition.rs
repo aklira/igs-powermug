@@ -55,7 +55,34 @@ pub struct Spec {
     pub requires: Requires,
     pub sessions: Vec<Session>,
     pub points: Vec<Point>,
+    /// The access rules of the commandable points (SPECIFICATIONS 10.3, FUN-CMD-003). Absent
+    /// means no point is commandable.
+    #[serde(default)]
+    pub commands: Vec<CommandRule>,
 }
+
+/// One grant on a commandable point: an issuer may run these operations on it, with values in
+/// the given rule, when its identity is at least as fine as `min_level`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommandRule {
+    pub point: String,
+    pub issuer: String,
+    /// `direct_execute` and `select`.
+    pub operations: Vec<String>,
+    /// `any` or `bool`.
+    pub values: String,
+    /// The finest identity level the grant can be checked against: `link`, `upstream`, `client`,
+    /// `application` or `user`.
+    pub min_level: String,
+}
+
+/// The operations a rule can name.
+pub const COMMAND_OPERATIONS: [&str; 2] = ["direct_execute", "select"];
+/// The value rules a rule can name.
+pub const COMMAND_VALUES: [&str; 2] = ["any", "bool"];
+/// The identity levels a rule can name, from the coarsest to the finest.
+pub const IDENTITY_LEVELS: [&str; 5] = ["link", "upstream", "client", "application", "user"];
 
 /// What the revision needs from the target: the contract version and the capabilities.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -305,8 +332,64 @@ pub fn validate_stage2(document: &Value) -> Vec<Finding> {
     }
     let session_ids = check_sessions(&revision, &mut findings);
     check_points(&revision, &session_ids, &mut findings);
+    check_commands(&revision, &mut findings);
     findings.sort();
     findings
+}
+
+/// Checks the command rules: each names a point of the document, and holds valid operations,
+/// value rule and identity level (`PMV-ACL-002` for an unknown point, `PMV-ACL-003` otherwise).
+fn check_commands(revision: &PartitionRevision, findings: &mut Vec<Finding>) {
+    let point_ids: std::collections::HashSet<&str> = revision
+        .spec
+        .points
+        .iter()
+        .map(|point| point.id.as_str())
+        .collect();
+    for (index, rule) in revision.spec.commands.iter().enumerate() {
+        let pointer = format!("/spec/commands/{index}");
+        if !point_ids.contains(rule.point.as_str()) {
+            push_finding(
+                findings,
+                "PMV-ACL-002",
+                pointer.clone(),
+                format!(
+                    "the command rule names {}, which is not a point of the document",
+                    rule.point
+                ),
+            );
+        }
+        let refused = |reason: String| {
+            (
+                "PMV-ACL-003",
+                pointer.clone(),
+                format!("the command rule on {} is not valid: {reason}", rule.point),
+            )
+        };
+        let problem = if rule.issuer.trim().is_empty() {
+            Some(refused("the issuer is empty".to_owned()))
+        } else if rule.operations.is_empty() {
+            Some(refused("it grants no operation".to_owned()))
+        } else if let Some(operation) = rule
+            .operations
+            .iter()
+            .find(|operation| !COMMAND_OPERATIONS.contains(&operation.as_str()))
+        {
+            Some(refused(format!("{operation} is not an operation")))
+        } else if !COMMAND_VALUES.contains(&rule.values.as_str()) {
+            Some(refused(format!("{} is not a value rule", rule.values)))
+        } else if !IDENTITY_LEVELS.contains(&rule.min_level.as_str()) {
+            Some(refused(format!(
+                "{} is not an identity level",
+                rule.min_level
+            )))
+        } else {
+            None
+        };
+        if let Some((code, pointer, message)) = problem {
+            push_finding(findings, code, pointer, message);
+        }
+    }
 }
 
 fn push_finding(findings: &mut Vec<Finding>, code: &'static str, pointer: String, message: String) {

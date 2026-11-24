@@ -25,6 +25,41 @@
     "spec"
   ],
   "$defs": {
+    "CommandRule": {
+      "description": "One grant on a commandable point: an issuer may run these operations on it, with values in\nthe given rule, when its identity is at least as fine as `min_level`.",
+      "type": "object",
+      "properties": {
+        "issuer": {
+          "type": "string"
+        },
+        "min_level": {
+          "description": "The finest identity level the grant can be checked against: `link`, `upstream`, `client`,\n`application` or `user`.",
+          "type": "string"
+        },
+        "operations": {
+          "description": "`direct_execute` and `select`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "point": {
+          "type": "string"
+        },
+        "values": {
+          "description": "`any` or `bool`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "point",
+        "issuer",
+        "operations",
+        "values",
+        "min_level"
+      ]
+    },
     "Endpoint": {
       "description": "The host and port of a station.",
       "type": "object",
@@ -161,6 +196,13 @@
     "Spec": {
       "type": "object",
       "properties": {
+        "commands": {
+          "description": "The access rules of the commandable points (SPECIFICATIONS 10.3, FUN-CMD-003). Absent\nmeans no point is commandable.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CommandRule"
+          }
+        },
         "points": {
           "type": "array",
           "items": {

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod canonical;
+pub mod change;
 pub mod error;
 pub mod load;
 pub mod partition;
