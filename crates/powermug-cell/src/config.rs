@@ -36,6 +36,26 @@ pub struct CellConfig {
 pub struct CommandsConfig {
     #[serde(default)]
     pub acl: Vec<AclConfig>,
+    /// Where the head of the command audit chain is anchored, outside the critical store's
+    /// directory (NFR-SEC-008). Without it, the head is not anchored.
+    #[serde(default)]
+    pub audit_anchor: Option<AuditAnchorConfig>,
+}
+
+/// The file the audit head is anchored to: written at start, every `every_s` seconds, and at
+/// stop. It is replaced whole, so the previous anchor stays until the new one is complete.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditAnchorConfig {
+    /// An absolute path, in a directory other than the critical store's.
+    pub path: PathBuf,
+    /// The period of the anchoring, in seconds (at least 1).
+    #[serde(default = "default_anchor_every_s")]
+    pub every_s: u64,
+}
+
+fn default_anchor_every_s() -> u64 {
+    60
 }
 
 /// One grant: an issuer, the point, the operations, the values, and the finest identity level
@@ -220,6 +240,8 @@ pub enum ConfigError {
     UnknownCommandPoint(String),
     #[error("the command rule for {point} is not valid: {reason}")]
     BadCommandRule { point: String, reason: String },
+    #[error("the audit anchor is not valid: {0}")]
+    BadAuditAnchor(String),
 }
 
 impl CellConfig {
@@ -275,6 +297,7 @@ impl CellConfig {
             check_adapters(adapters, &self.lanes, &lane_of_session)?;
         }
         check_commands(&self.commands, &self.lanes)?;
+        check_audit_anchor(&self.commands, &self.critical_db)?;
         Ok(())
     }
 }
@@ -378,6 +401,26 @@ impl LaneConfig {
             .collect();
         PointTable::new(self.revision, specs)
     }
+}
+
+fn check_audit_anchor(commands: &CommandsConfig, critical_db: &Path) -> Result<(), ConfigError> {
+    let Some(anchor) = &commands.audit_anchor else {
+        return Ok(());
+    };
+    let bad = |reason: &str| ConfigError::BadAuditAnchor(reason.to_owned());
+    if !anchor.path.is_absolute() {
+        return Err(bad("the anchor path is not absolute"));
+    }
+    if anchor.every_s == 0 {
+        return Err(bad("the anchoring period is 0 seconds"));
+    }
+    let store_directory = critical_db.parent().unwrap_or(Path::new(""));
+    if anchor.path.parent() == Some(store_directory) {
+        return Err(bad(
+            "the anchor is in the critical store's directory, not outside it",
+        ));
+    }
+    Ok(())
 }
 
 fn check_commands(commands: &CommandsConfig, lanes: &[LaneConfig]) -> Result<(), ConfigError> {

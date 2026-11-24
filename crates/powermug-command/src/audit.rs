@@ -26,6 +26,31 @@ CREATE TABLE IF NOT EXISTS audit (
 /// The hash before the first record.
 pub const GENESIS: [u8; 32] = [0; 32];
 
+/// A hash as 64 lowercase hex characters: the form an anchor or an export carries.
+#[must_use]
+pub fn to_hex(hash: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    hash.iter()
+        .fold(String::with_capacity(64), |mut text, byte| {
+            let _ = write!(text, "{byte:02x}");
+            text
+        })
+}
+
+/// Reads a hash written by [`to_hex`]. Returns `None` for any other text.
+#[must_use]
+pub fn from_hex(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 || !text.is_ascii() {
+        return None;
+    }
+    let mut hash = [0_u8; 32];
+    for (index, pair) in text.as_bytes().chunks(2).enumerate() {
+        let digits = std::str::from_utf8(pair).ok()?;
+        hash[index] = u8::from_str_radix(digits, 16).ok()?;
+    }
+    Some(hash)
+}
+
 /// The chain does not verify: the record at `seq` is altered, or its predecessor is.
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("the audit chain breaks at record {seq}")]

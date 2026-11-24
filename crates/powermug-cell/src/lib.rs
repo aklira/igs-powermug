@@ -8,6 +8,7 @@
 //! only through the adapter contract.
 
 pub mod adapters;
+pub mod anchor;
 pub mod commands;
 pub mod config;
 
@@ -77,6 +78,8 @@ pub struct Cell {
     pub commands_by_session: std::collections::BTreeMap<u32, adapters::CommandLink>,
     writer: Writer,
     commands: powermug_command::CommandWriter,
+    /// A journal client for the audit anchoring, which reads the head of the chain.
+    audit: powermug_command::CommandClient,
 }
 
 impl Cell {
@@ -107,6 +110,7 @@ impl Cell {
         // The command journal lives in the critical store's file, on its own connection.
         let (commands, command_writer) =
             powermug_command::CommandWriter::spawn(&config.critical_db)?;
+        let audit = commands.clone();
         // Each session's dispatcher has the empty ACL and no owner: until the configuration
         // grants a command and the partition has an owner, every command is refused.
         let mut commands_by_session = std::collections::BTreeMap::new();
@@ -153,7 +157,14 @@ impl Cell {
             commands_by_session,
             writer,
             commands: command_writer,
+            audit,
         })
+    }
+
+    /// A journal client for anchoring the audit head. It must be dropped before the cell closes.
+    #[must_use]
+    pub fn audit_client(&self) -> powermug_command::CommandClient {
+        self.audit.clone()
     }
 
     /// Releases the lanes and waits for the telemetry writer to stop.
@@ -164,11 +175,14 @@ impl Cell {
             commands_by_session,
             writer,
             commands,
+            audit,
         } = self;
         drop(api);
         drop(lanes);
-        // The dispatchers hold journal clients: they go before the writer is waited for.
+        // The dispatchers and the anchoring hold journal clients: they go before the command
+        // writer is waited for.
         drop(commands_by_session);
+        drop(audit);
         writer.join();
         commands.join();
     }
@@ -221,6 +235,15 @@ pub async fn serve(
         .map(|adapters| adapters.limits)
         .unwrap_or_default();
     adapters::provision(&mut instances, limits)?;
+    // The audit head is anchored outside the store until the stop signal (NFR-SEC-008).
+    let anchoring = config.commands.audit_anchor.as_ref().map(|anchor| {
+        tokio::spawn(anchor::run(
+            cell.audit_client(),
+            anchor.path.clone(),
+            std::time::Duration::from_secs(anchor.every_s),
+            stopped.clone(),
+        ))
+    });
     let supervisors: Vec<_> = instances
         .into_iter()
         .map(|instance| {
@@ -247,6 +270,9 @@ pub async fn serve(
     let _ = stop.send(true);
     for supervisor in supervisors {
         let _ = supervisor.await;
+    }
+    if let Some(anchoring) = anchoring {
+        let _ = anchoring.await;
     }
     cell.close();
     served.map_err(|err| CellError::Listen(err.to_string()))
