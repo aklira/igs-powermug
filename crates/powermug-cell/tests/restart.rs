@@ -74,3 +74,48 @@ fn a_command_left_ready_by_an_earlier_run_is_decided_when_the_cell_opens() {
     drop(client);
     writer.join();
 }
+
+#[test]
+fn a_command_whose_execution_was_sent_before_the_stop_is_in_doubt_when_the_cell_opens() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = config(dir.path());
+
+    // An earlier run opened the intent of an execution and stopped before its result was written.
+    let (client, writer) = CommandWriter::spawn(&config.critical_db).expect("spawns");
+    client
+        .submit(
+            NewCommand {
+                command_id: "c2".into(),
+                identity: "scada-demo".into(),
+                identity_level: Granularity::Client,
+                point: "S3/TC_101".into(),
+                operation: "direct_execute".into(),
+                value: "true".into(),
+                expires_ns: i64::MAX,
+                expected_revision: String::new(),
+                owner_epoch: 1,
+                ha_term: 1,
+            },
+            1_000,
+        )
+        .expect("submits");
+    for next in [State::Validated, State::DurablyAccepted, State::Ready] {
+        client.move_to("c2", next, 1_000, "").expect("moves");
+    }
+    client
+        .record_intent("c2", State::ExecuteSent, 1_000)
+        .expect("intent");
+    drop(client);
+    writer.join();
+
+    // The frame may have left: the command is in doubt, and nothing is replayed.
+    let cell = Cell::open(&config, trusted_key()).expect("opens");
+    let outcome = cell
+        .recovery
+        .iter()
+        .find(|recovery| recovery.command_id == "c2")
+        .expect("decided");
+    assert_eq!(outcome.to, State::InDoubt);
+    assert_eq!(outcome.action, powermug_command::Action::Nothing);
+    cell.close();
+}
