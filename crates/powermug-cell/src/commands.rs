@@ -492,6 +492,20 @@ impl Gateway {
 }
 
 impl powermug_mgmt::CommandGateway for Gateway {
+    fn active_revision_changed(&self, partition: &str, revision: Option<&str>) {
+        for route in self
+            .routes
+            .values()
+            .filter(|route| route.partition == partition)
+        {
+            route
+                .dispatcher
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .set_active_revision(revision.map(str::to_owned));
+        }
+    }
+
     fn submit(
         &self,
         request: &powermug_mgmt::CommandRequest,

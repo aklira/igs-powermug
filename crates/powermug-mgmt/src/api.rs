@@ -291,6 +291,10 @@ async fn rollback(
     };
     let outcome = store.rollback(&request.site, &active)?;
     let active = store.active(&request.site)?;
+    drop(store);
+    if let Some(gateway) = api.gateway.as_ref() {
+        gateway.active_revision_changed(&request.site, active.as_deref());
+    }
     Ok(Json(json!({
         "scope": request.site,
         "active": active,
@@ -420,6 +424,10 @@ async fn activate(
         Outcome::Changed => "ACTIVE",
         Outcome::Unchanged => "ALREADY_ACTIVE",
     };
+    let active = api.store().active(&verified.scope)?;
+    if let Some(gateway) = api.gateway.as_ref() {
+        gateway.active_revision_changed(&verified.scope, active.as_deref());
+    }
     Ok(Json(json!({
         "status": status,
         "revision_id": verified.id,

@@ -130,3 +130,61 @@ fn the_gateway_routes_a_command_through_the_rule_the_owner_and_the_stream() {
     drop(journal);
     writer.join();
 }
+
+#[test]
+fn an_activation_moves_the_partition_to_the_revision_its_commands_cite() {
+    let config = CellConfig::from_json(CONFIG).expect("valid");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (journal, writer) = CommandWriter::spawn(dir.path().join("critical.db")).expect("spawns");
+    let mut ownership = Ownership::new();
+    ownership.takeover("S3");
+    let route = CommandRoute::new();
+    let (to_adapter, _queued) = channel(8);
+    route.attach(to_adapter);
+    let dispatcher = Arc::new(Mutex::new(Dispatcher::new(
+        journal.clone(),
+        acl_of(&config.commands),
+        ownership,
+        route.clone(),
+    )));
+    let mut routes = BTreeMap::new();
+    routes.insert(
+        "S3/TC_101".to_owned(),
+        Route {
+            dispatcher,
+            partition: "S3".to_owned(),
+            address: 5,
+        },
+    );
+    let gateway = Gateway::new(routes);
+
+    // No revision is active yet: the command is refused, whatever it cites.
+    assert_eq!(
+        gateway
+            .submit(&command("scada-demo", "S3/TC_101", "c1"), 10)
+            .expect("submits"),
+        State::RejectedInvalid
+    );
+
+    gateway.active_revision_changed("S3", Some("r1"));
+    assert_eq!(
+        gateway
+            .submit(&command("scada-demo", "S3/TC_101", "c2"), 20)
+            .expect("submits"),
+        State::Ready
+    );
+
+    // A rollback to no revision refuses the commands again.
+    gateway.active_revision_changed("S3", None);
+    assert_eq!(
+        gateway
+            .submit(&command("scada-demo", "S3/TC_101", "c3"), 30)
+            .expect("submits"),
+        State::RejectedInvalid
+    );
+
+    drop(gateway);
+    drop(route);
+    drop(journal);
+    writer.join();
+}

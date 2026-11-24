@@ -60,4 +60,8 @@ pub trait CommandGateway: Send + Sync {
         identity: &str,
         now_ns: i64,
     ) -> Result<State, GatewayError>;
+
+    /// The active revision of a partition changed by an activation or a rollback: `revision` is
+    /// the content identifier now active, or `None`. The commands of the partition must cite it.
+    fn active_revision_changed(&self, _partition: &str, _revision: Option<&str>) {}
 }
