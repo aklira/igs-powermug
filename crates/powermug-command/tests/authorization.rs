@@ -205,3 +205,38 @@ fn a_refusal_is_recorded_as_a_terminal_state_in_the_journal() {
     );
     assert!(refused.state.is_terminal());
 }
+
+#[test]
+fn one_grant_per_operation_of_the_same_issuer_each_applies() {
+    let mut acl = Acl::new();
+    for operation in ["direct_execute", "select"] {
+        acl.grant(
+            "S3/TC_101",
+            Grant {
+                issuer: "scada-demo".into(),
+                operations: vec![operation.into()],
+                values: ValueRule::Bool,
+                min_level: Granularity::Link,
+            },
+        );
+    }
+    for operation in ["direct_execute", "select"] {
+        assert_eq!(
+            authorize(
+                &acl,
+                Mode::Normal,
+                &request("scada-demo", "S3/TC_101", operation, Value::Bool(true))
+            ),
+            Ok(()),
+            "{operation}"
+        );
+    }
+    assert_eq!(
+        refusal(authorize(
+            &acl,
+            Mode::Normal,
+            &request("scada-demo", "S3/TC_101", "setpoint", Value::Bool(true))
+        )),
+        (State::RejectedAuth, "operation not granted")
+    );
+}

@@ -146,26 +146,33 @@ pub fn authorize(acl: &Acl, mode: Mode, request: &Request<'_>) -> Result<(), Ref
             reason: "not commandable",
         });
     };
-    let Some(grant) = grants.iter().find(|grant| grant.issuer == request.issuer) else {
+    // A point may carry one grant per operation of an issuer: the grant that names the
+    // requested operation is the one that applies.
+    let issuer_grants: Vec<&Grant> = grants
+        .iter()
+        .filter(|grant| grant.issuer == request.issuer)
+        .collect();
+    if issuer_grants.is_empty() {
         return Err(Refusal {
             state: State::RejectedAuth,
             reason: "issuer not granted",
+        });
+    }
+    let Some(grant) = issuer_grants.iter().copied().find(|grant| {
+        grant
+            .operations
+            .iter()
+            .any(|operation| operation == request.operation)
+    }) else {
+        return Err(Refusal {
+            state: State::RejectedAuth,
+            reason: "operation not granted",
         });
     };
     if request.identity_level < grant.min_level {
         return Err(Refusal {
             state: State::RejectedAuth,
             reason: "identity level too coarse",
-        });
-    }
-    if !grant
-        .operations
-        .iter()
-        .any(|operation| operation == request.operation)
-    {
-        return Err(Refusal {
-            state: State::RejectedAuth,
-            reason: "operation not granted",
         });
     }
     let accepted = match (grant.values, request.value) {

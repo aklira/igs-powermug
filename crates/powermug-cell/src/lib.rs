@@ -8,6 +8,7 @@
 //! only through the adapter contract.
 
 pub mod adapters;
+pub mod commands;
 pub mod config;
 
 use std::future::Future;
