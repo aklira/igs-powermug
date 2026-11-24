@@ -7,6 +7,7 @@
 //! given by the caller; the caller reads the updates and passes them to [`Dispatcher::update`].
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use powermug_command::authorization::{authorize, Acl};
 use powermug_command::authorization::{Request as AclRequest, Value};
@@ -40,6 +41,42 @@ pub struct Request {
     pub expected_revision: String,
 }
 
+/// The way to the adapter's command stream of one session. It is attached while the adapter's
+/// stream is open, and detached when it ends: a dispatch with no stream attached is refused as
+/// not sent, never queued where it would wait for an adapter that is not there.
+#[derive(Debug, Clone, Default)]
+pub struct CommandRoute {
+    sender: Arc<Mutex<Option<mpsc::Sender<pb::CommandDispatch>>>>,
+}
+
+impl CommandRoute {
+    /// A route with no stream attached.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Attaches the adapter's stream.
+    pub fn attach(&self, sender: mpsc::Sender<pb::CommandDispatch>) {
+        *self.sender.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
+    }
+
+    /// Detaches the stream: nothing is sent until another one is attached.
+    pub fn detach(&self) {
+        *self.sender.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    fn send(&self, dispatch: pb::CommandDispatch) -> Result<(), &'static str> {
+        let guard = self.sender.lock().unwrap_or_else(PoisonError::into_inner);
+        match guard.as_ref() {
+            Some(sender) => sender
+                .try_send(dispatch)
+                .map_err(|_| "the adapter command stream is full or closed"),
+            None => Err("no adapter command stream is attached"),
+        }
+    }
+}
+
 /// What the dispatcher knows of a command it dispatched, to send its execution later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Known {
@@ -63,7 +100,7 @@ pub struct Dispatcher {
     journal: CommandClient,
     acl: Acl,
     ownership: Ownership,
-    to_adapter: mpsc::Sender<pb::CommandDispatch>,
+    route: CommandRoute,
     known: BTreeMap<String, Known>,
     open: BTreeMap<String, Open>,
 }
@@ -76,13 +113,13 @@ impl Dispatcher {
         journal: CommandClient,
         acl: Acl,
         ownership: Ownership,
-        to_adapter: mpsc::Sender<pb::CommandDispatch>,
+        route: CommandRoute,
     ) -> Self {
         Self {
             journal,
             acl,
             ownership,
-            to_adapter,
+            route,
             known: BTreeMap::new(),
             open: BTreeMap::new(),
         }
@@ -203,7 +240,7 @@ impl Dispatcher {
             owner_epoch: known.owner_epoch,
             expires_ns: known.expires_ns,
         };
-        match self.to_adapter.try_send(message) {
+        match self.route.send(message) {
             Ok(()) => {
                 self.open
                     .insert(command_id.to_owned(), Open { emission, select });
@@ -211,10 +248,12 @@ impl Dispatcher {
                     .state(command_id)
                     .map(|state| state.unwrap_or(to))
             }
-            Err(_) => emission.finish(
-                Outcome::NotSent("adapter command stream unavailable".into()),
-                now_ns,
-            ),
+            Err(reason) => {
+                // Not dispatched, and not retried by the dispatcher: the command is failed.
+                emission.finish(Outcome::NotSent(reason.into()), now_ns)?;
+                self.journal
+                    .move_to(command_id, State::Failed, now_ns, reason)
+            }
         }
     }
 
@@ -299,7 +338,7 @@ impl Dispatcher {
     }
 }
 
-/// A channel the dispatcher sends its dispatches on, and the adapter reads from.
+/// A channel of dispatches: the route takes the sender, and the adapter's stream reads the receiver.
 #[must_use]
 pub fn channel(
     capacity: usize,

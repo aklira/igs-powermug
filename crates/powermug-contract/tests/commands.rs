@@ -3,6 +3,7 @@
 //! stream on the same instance is refused. The core and the adapter run in this process.
 
 use std::os::unix::fs::MetadataExt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use powermug_contract::client;
@@ -108,6 +109,7 @@ async fn a_dispatch_reaches_the_adapter_and_its_update_reaches_the_core() {
         listener,
         dispatch_rx,
         update_tx,
+        Arc::new(tokio::sync::Notify::new()),
         async {
             let _ = stopped.await;
         },
@@ -176,6 +178,7 @@ async fn a_command_stream_before_the_handshake_is_refused() {
         listener,
         dispatch_rx,
         update_tx,
+        Arc::new(tokio::sync::Notify::new()),
         async {
             let _ = stopped.await;
         },

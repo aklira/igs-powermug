@@ -2,7 +2,7 @@
 //! admitted by the partition's owner, dispatched, and followed by the adapter's answers. A
 //! fake adapter reads the dispatches and sends the answers.
 
-use powermug_cell::commands::{channel, Dispatcher, Request};
+use powermug_cell::commands::{channel, CommandRoute, Dispatcher, Request};
 use powermug_command::authorization::{Acl, Grant, ValueRule};
 use powermug_command::ownership::Ownership;
 use powermug_command::{CommandWriter, Granularity, State};
@@ -78,8 +78,10 @@ fn harness(ownership: Ownership) -> Harness {
     let dir = tempfile::tempdir().expect("temp dir");
     let (client, writer) = CommandWriter::spawn(dir.path().join("critical.db")).expect("spawns");
     let (to_adapter, dispatches) = channel(8);
+    let route = CommandRoute::new();
+    route.attach(to_adapter);
     Harness {
-        dispatcher: Dispatcher::new(client, acl(), ownership, to_adapter),
+        dispatcher: Dispatcher::new(client, acl(), ownership, route),
         dispatches,
         writer,
         _dir: dir,
@@ -229,4 +231,28 @@ fn a_known_command_id_is_answered_with_its_state_and_not_dispatched_again() {
     );
     assert!(h.dispatches.try_recv().is_err());
     h.finish();
+}
+
+#[test]
+fn a_command_with_no_adapter_stream_attached_is_failed_and_never_queued() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (client, writer) = CommandWriter::spawn(dir.path().join("critical.db")).expect("spawns");
+    let (to_adapter, mut queued) = channel(8);
+    let route = CommandRoute::new();
+    route.attach(to_adapter);
+    route.detach();
+    let mut dispatcher = Dispatcher::new(client, acl(), owned(), route);
+
+    assert_eq!(
+        dispatcher
+            .submit(&request("c1", false), 10)
+            .expect("submits"),
+        State::Failed
+    );
+    assert!(
+        queued.try_recv().is_err(),
+        "nothing is queued for an absent adapter"
+    );
+    drop(dispatcher);
+    writer.join();
 }

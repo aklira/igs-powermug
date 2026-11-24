@@ -65,8 +65,8 @@ async fn serve(
         .await
 }
 
-/// As [`serve_instance`], and the instance also serves commands: `dispatches` are sent to the
-/// adapter, and the adapter's updates are forwarded to `updates`.
+/// As [`serve_instance_observed`], and the instance also serves commands: `dispatches` are sent
+/// to the adapter, and the adapter's updates are forwarded to `updates`.
 ///
 /// # Errors
 ///
@@ -77,8 +77,11 @@ pub async fn serve_instance_commanded(
     listener: UnixListener,
     dispatches: mpsc::Receiver<CommandDispatch>,
     updates: mpsc::UnboundedSender<CommandUpdate>,
+    heartbeat: Arc<Notify>,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), tonic::transport::Error> {
-    let service = CoreService::new(config, sink).with_commands(dispatches, updates);
+    let service = CoreService::new(config, sink)
+        .with_heartbeat(heartbeat)
+        .with_commands(dispatches, updates);
     serve(service, listener, shutdown).await
 }

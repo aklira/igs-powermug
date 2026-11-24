@@ -154,6 +154,7 @@ async fn an_instance_started_by_the_cell_feeds_its_lane() {
         Arc::clone(&lane),
         Policy::default(),
         stopped,
+        None,
     ));
 
     let watched = Arc::clone(&lane);
@@ -204,7 +205,7 @@ async fn an_instance_that_cannot_start_degrades_its_session_and_is_quarantined()
     let (_stop, stopped) = watch::channel(false);
     let outcome = tokio::time::timeout(
         Duration::from_secs(30),
-        supervise(instance, Arc::clone(&lane), policy, stopped),
+        supervise(instance, Arc::clone(&lane), policy, stopped, None),
     )
     .await
     .expect("the budget runs out");
@@ -260,6 +261,7 @@ async fn a_killed_adapter_degrades_its_session_and_is_restarted() {
         Arc::clone(&lane),
         Policy::default(),
         stopped,
+        None,
     ));
 
     let watched = Arc::clone(&lane);
@@ -371,6 +373,7 @@ async fn an_instance_runs_in_its_cgroup_under_its_limits() {
         Arc::clone(&lane),
         Policy::default(),
         stopped,
+        None,
     ));
     let watched = Arc::clone(&lane);
     let fed = wait_until(
@@ -437,6 +440,7 @@ async fn a_healthy_instance_keeps_running_past_the_health_window() {
         Arc::clone(&lane),
         Policy::default(),
         stopped,
+        None,
     ));
     let watched = Arc::clone(&lane);
     let fed = wait_until(
@@ -483,6 +487,7 @@ async fn a_silent_instance_is_killed_and_restarted() {
         Arc::clone(&lane),
         Policy::default(),
         stopped,
+        None,
     ));
     let watched = Arc::clone(&lane);
     let fed = wait_until(
@@ -553,6 +558,7 @@ async fn a_station_that_stops_degrades_its_points_in_under_two_seconds() {
         Arc::clone(&lane),
         Policy::default(),
         stopped,
+        None,
     ));
     let watched = Arc::clone(&lane);
     let fed = wait_until(

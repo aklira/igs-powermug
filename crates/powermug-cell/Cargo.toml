@@ -24,6 +24,7 @@ powermug-contract = { path = "../powermug-contract" }
 powermug-core = { path = "../powermug-core" }
 powermug-mgmt = { path = "../powermug-mgmt" }
 powermug-sandbox = { path = "../powermug-sandbox" }
+tonic = { version = "=0.14.5", default-features = false, features = ["transport"] }
 powermug-store = { path = "../powermug-store" }
 powermug-revision = { path = "../powermug-revision" }
 serde = { version = "1", features = ["derive"] }

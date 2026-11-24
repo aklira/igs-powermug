@@ -190,6 +190,7 @@ async fn a_dispatch_is_emitted_to_the_station_and_its_outcome_reaches_the_core()
         listener,
         dispatch_rx,
         update_tx,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
         async {
             let _ = core_stopped.await;
         },

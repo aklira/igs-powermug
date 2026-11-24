@@ -20,18 +20,19 @@ use powermug_adapter_iec104::{MappedPoint, Settings};
 use powermug_contract::handshake::{Offer, Requirement, Version};
 use powermug_contract::peer::ExpectedPeer;
 use powermug_contract::proto::v1 as pb;
-use powermug_contract::server::serve_instance_observed;
+use powermug_contract::server::{serve_instance_commanded, serve_instance_observed};
 use powermug_contract::service::CoreConfig;
 use powermug_core::supervisor::{Decision, Policy, Supervisor};
 use powermug_core::{Clock, Lane, LaneSink, SessionId};
 use sha2::{Digest, Sha256};
 use tokio::net::UnixListener;
 use tokio::process::Command;
-use tokio::sync::{oneshot, watch, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use powermug_sandbox::cgroup::{own_cgroup, Cgroup, CpuMax, Limits};
 use powermug_sandbox::SandboxError;
 
+use crate::commands::{channel as command_channel, CommandRoute, Dispatcher};
 use crate::config::{instance_directory, CellConfig, ConfigError, InstanceLimits};
 
 /// One South instance, as the configuration describes it.
@@ -160,11 +161,20 @@ fn offer() -> Offer {
 }
 
 /// Supervises one instance until `stop` is set or its budget is spent.
+/// The command path of one session: the dispatcher that owns its commands, and the route to the
+/// adapter's command stream, attached while the stream is open.
+#[derive(Clone, Debug)]
+pub struct CommandLink {
+    pub dispatcher: Arc<Mutex<Dispatcher>>,
+    pub route: CommandRoute,
+}
+
 pub async fn supervise(
     instance: Instance,
     lane: Arc<Mutex<Lane>>,
     policy: Policy,
     mut stop: watch::Receiver<bool>,
+    commands: Option<CommandLink>,
 ) -> Outcome {
     let clock = Clock::new();
     let mut supervisor = Supervisor::new(policy);
@@ -172,7 +182,7 @@ pub async fn supervise(
         if *stop.borrow() || supervisor.started(Instant::now()).is_err() {
             return Outcome::Stopped;
         }
-        let reason = match run_once(&instance, &lane, &clock, &mut stop).await {
+        let reason = match run_once(&instance, &lane, &clock, &mut stop, commands.as_ref()).await {
             Cycle::Stopped => return Outcome::Stopped,
             Cycle::Ended(reason) => reason,
         };
@@ -227,6 +237,7 @@ async fn run_once(
     lane: &Arc<Mutex<Lane>>,
     clock: &Clock,
     stop: &mut watch::Receiver<bool>,
+    commands: Option<&CommandLink>,
 ) -> Cycle {
     let digest = match artifact_sha256(&instance.binary) {
         Ok(digest) => digest,
@@ -289,15 +300,10 @@ async fn run_once(
     let sink = Box::new(LaneSink::new(Arc::clone(lane), *clock));
     let heartbeat = Arc::new(Notify::new());
     let (done, done_rx) = oneshot::channel::<()>();
-    let mut server = tokio::spawn(serve_instance_observed(
-        config,
-        sink,
-        listener,
-        Arc::clone(&heartbeat),
-        async {
-            let _ = done_rx.await;
-        },
-    ));
+    let shutdown = async move {
+        let _ = done_rx.await;
+    };
+    let (mut server, pump) = start_server(config, sink, listener, &heartbeat, shutdown, commands);
 
     // The silence window restarts with each health report (§6.3). Three missed reports
     // make the instance a crash, and the process is killed.
@@ -326,6 +332,7 @@ async fn run_once(
         let _ = done.send(());
         let _ = server.await;
     }
+    release_commands(commands, pump).await;
     match end {
         End::Exited(reason) | End::ServerFailed(reason) => Cycle::Ended(reason),
         End::Silent => Cycle::Ended("no health report for 3 s: the process is killed".into()),
@@ -362,4 +369,86 @@ fn jitter() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.subsec_nanos());
     f64::from(nanos % 1000) / 1000.0
+}
+
+/// Starts the server of one cycle. With a command path, the adapter's command stream is attached
+/// for this cycle only, and its updates are applied to the dispatcher by a pump that ends when
+/// the server ends.
+fn start_server(
+    config: CoreConfig,
+    sink: Box<dyn powermug_contract::sink::BatchSink>,
+    listener: UnixListener,
+    heartbeat: &Arc<Notify>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    commands: Option<&CommandLink>,
+) -> (
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    match commands {
+        Some(link) => {
+            let (dispatch_tx, dispatch_rx) = command_channel(COMMAND_QUEUE);
+            let (update_tx, mut update_rx) = mpsc::unbounded_channel::<pb::CommandUpdate>();
+            link.route.attach(dispatch_tx);
+            let dispatcher = Arc::clone(&link.dispatcher);
+            let pump = tokio::spawn(async move {
+                while let Some(update) = update_rx.recv().await {
+                    let mut guard = dispatcher.lock().unwrap_or_else(PoisonError::into_inner);
+                    let _ = guard.update(&update, now_ns());
+                }
+            });
+            let server = tokio::spawn(serve_instance_commanded(
+                config,
+                sink,
+                listener,
+                dispatch_rx,
+                update_tx,
+                Arc::clone(heartbeat),
+                shutdown,
+            ));
+            (server, Some(pump))
+        }
+        None => (
+            tokio::spawn(serve_instance_observed(
+                config,
+                sink,
+                listener,
+                Arc::clone(heartbeat),
+                shutdown,
+            )),
+            None,
+        ),
+    }
+}
+
+/// The adapter's stream of this cycle is gone: nothing more is sent on it, the pump has applied
+/// its last updates, and what the stream left unanswered is in doubt (PM-CMD-002).
+async fn release_commands(
+    commands: Option<&CommandLink>,
+    pump: Option<tokio::task::JoinHandle<()>>,
+) {
+    if let Some(link) = commands {
+        link.route.detach();
+        if let Some(pump) = pump {
+            let _ = pump.await;
+        }
+        let mut guard = link
+            .dispatcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let _ = guard.stream_ended(now_ns());
+    }
+}
+
+/// Commands a dispatch can wait for in the queue of its stream.
+const COMMAND_QUEUE: usize = 64;
+
+/// The wall clock in nanoseconds, for the expiry and the audit of the command path.
+fn now_ns() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos()),
+    )
+    .unwrap_or(i64::MAX)
 }

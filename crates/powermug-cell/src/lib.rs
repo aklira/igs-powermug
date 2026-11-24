@@ -73,6 +73,8 @@ impl IndicatorSource for CellIndicators {
 pub struct Cell {
     pub api: Arc<Api>,
     pub lanes: Vec<Arc<Mutex<Lane>>>,
+    /// The command path of each South session that has an adapter instance.
+    pub commands_by_session: std::collections::BTreeMap<u32, adapters::CommandLink>,
     writer: Writer,
     commands: powermug_command::CommandWriter,
 }
@@ -105,6 +107,25 @@ impl Cell {
         // The command journal lives in the critical store's file, on its own connection.
         let (commands, command_writer) =
             powermug_command::CommandWriter::spawn(&config.critical_db)?;
+        // Each session's dispatcher has the empty ACL and no owner: until the configuration
+        // grants a command and the partition has an owner, every command is refused.
+        let mut commands_by_session = std::collections::BTreeMap::new();
+        for instance in adapters::instances(config)? {
+            let route = commands::CommandRoute::new();
+            let dispatcher = commands::Dispatcher::new(
+                commands.clone(),
+                powermug_command::authorization::Acl::new(),
+                powermug_command::ownership::Ownership::new(),
+                route.clone(),
+            );
+            commands_by_session.insert(
+                instance.session,
+                adapters::CommandLink {
+                    dispatcher: Arc::new(Mutex::new(dispatcher)),
+                    route,
+                },
+            );
+        }
         let api = Arc::new(Api::new(
             critical,
             powermug_v1(),
@@ -115,6 +136,7 @@ impl Cell {
         Ok(Self {
             api,
             lanes,
+            commands_by_session,
             writer,
             commands: command_writer,
         })
@@ -125,11 +147,14 @@ impl Cell {
         let Self {
             api,
             lanes,
+            commands_by_session,
             writer,
             commands,
         } = self;
         drop(api);
         drop(lanes);
+        // The dispatchers hold journal clients: they go before the writer is waited for.
+        drop(commands_by_session);
         writer.join();
         commands.join();
     }
@@ -186,11 +211,13 @@ pub async fn serve(
         .into_iter()
         .map(|instance| {
             let lane = Arc::clone(&cell.lanes[instance.lane]);
+            let commands = cell.commands_by_session.get(&instance.session).cloned();
             tokio::spawn(adapters::supervise(
                 instance,
                 lane,
                 Policy::default(),
                 stopped.clone(),
+                commands,
             ))
         })
         .collect();
