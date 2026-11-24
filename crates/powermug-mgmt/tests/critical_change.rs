@@ -38,6 +38,17 @@ impl CommandGateway for Events {
         ));
     }
 
+    fn active_rules_changed(
+        &self,
+        partition: &str,
+        rules: &[powermug_revision::partition::CommandRule],
+    ) {
+        self.0
+            .lock()
+            .expect("lock")
+            .push(format!("rules:{partition}:{}", rules.len()));
+    }
+
     fn begin_critical_change(&self, partition: &str) {
         self.0
             .lock()
@@ -140,10 +151,13 @@ async fn only_an_activation_critical_for_commands_blocks_them_until_it_takes_eff
     assert_eq!(
         recorded,
         vec![
-            "changed:S3:".to_owned() + &first_id,
-            "changed:S3:".to_owned() + &second_id,
+            "rules:S3:0".to_owned(),
+            format!("changed:S3:{first_id}"),
+            "rules:S3:0".to_owned(),
+            format!("changed:S3:{second_id}"),
             "begin:S3".to_owned(),
-            "changed:S3:".to_owned() + &third_id,
+            "rules:S3:1".to_owned(),
+            format!("changed:S3:{third_id}"),
             "begin:S3".to_owned(),
             "abort:S3".to_owned(),
         ]

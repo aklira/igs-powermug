@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use powermug_core::lane::{PointSpec, PointTable, SessionId};
+use powermug_revision::partition::CommandRule;
 use powermug_store::EventClass;
 use serde::Deserialize;
 use thiserror::Error;
@@ -29,13 +30,11 @@ pub struct CellConfig {
     pub commands: CommandsConfig,
 }
 
-/// The rules that let an issuer command a point (SPECIFICATIONS 9.3). Nothing is commandable
-/// without a rule.
+/// The command settings of the cell. The rules that let an issuer command a point are not here:
+/// they are the command rules of the active partition revision (SPECIFICATIONS 9.3, 10.3).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CommandsConfig {
-    #[serde(default)]
-    pub acl: Vec<AclConfig>,
     /// Where the head of the command audit chain is anchored, outside the critical store's
     /// directory (NFR-SEC-008). Without it, the head is not anchored.
     #[serde(default)]
@@ -56,31 +55,6 @@ pub struct AuditAnchorConfig {
 
 fn default_anchor_every_s() -> u64 {
     60
-}
-
-/// One grant: an issuer, the point, the operations, the values, and the finest identity level
-/// the grant can be checked against.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AclConfig {
-    pub point: String,
-    pub issuer: String,
-    /// `direct_execute` and `select`.
-    pub operations: Vec<String>,
-    /// `any` (default) or `bool`.
-    #[serde(default = "default_values")]
-    pub values: String,
-    /// `link` (default), `upstream`, `client`, `application` or `user`.
-    #[serde(default = "default_min_level")]
-    pub min_level: String,
-}
-
-fn default_values() -> String {
-    "any".to_owned()
-}
-
-fn default_min_level() -> String {
-    "link".to_owned()
 }
 
 /// The South instances the cell starts (§6.1, §6.2).
@@ -236,10 +210,6 @@ pub enum ConfigError {
     BadLimit(&'static str),
     #[error("session {session} has two points at object address {address}")]
     DuplicateAddress { session: u32, address: u32 },
-    #[error("the command rule for {0} names a point that is not in any lane")]
-    UnknownCommandPoint(String),
-    #[error("the command rule for {point} is not valid: {reason}")]
-    BadCommandRule { point: String, reason: String },
     #[error("the audit anchor is not valid: {0}")]
     BadAuditAnchor(String),
 }
@@ -296,7 +266,6 @@ impl CellConfig {
         if let Some(adapters) = &self.adapters {
             check_adapters(adapters, &self.lanes, &lane_of_session)?;
         }
-        check_commands(&self.commands, &self.lanes)?;
         check_audit_anchor(&self.commands, &self.critical_db)?;
         Ok(())
     }
@@ -423,48 +392,14 @@ fn check_audit_anchor(commands: &CommandsConfig, critical_db: &Path) -> Result<(
     Ok(())
 }
 
-fn check_commands(commands: &CommandsConfig, lanes: &[LaneConfig]) -> Result<(), ConfigError> {
-    let points: HashSet<&str> = lanes
-        .iter()
-        .flat_map(|lane| lane.points.iter().map(|point| point.id.as_str()))
-        .collect();
-    for rule in &commands.acl {
-        let bad = |reason: &str| ConfigError::BadCommandRule {
-            point: rule.point.clone(),
-            reason: reason.to_owned(),
-        };
-        if !points.contains(rule.point.as_str()) {
-            return Err(ConfigError::UnknownCommandPoint(rule.point.clone()));
-        }
-        if rule.issuer.trim().is_empty() {
-            return Err(bad("the issuer is empty"));
-        }
-        if rule.operations.is_empty() {
-            return Err(bad("no operation is granted"));
-        }
-        if rule
-            .operations
-            .iter()
-            .any(|operation| operation != "direct_execute" && operation != "select")
-        {
-            return Err(bad("an operation is not direct_execute or select"));
-        }
-        if rule.values != "any" && rule.values != "bool" {
-            return Err(bad("values must be any or bool"));
-        }
-        if powermug_command::Granularity::from_code(&rule.min_level).is_none() {
-            return Err(bad("min_level is not a known identity level"));
-        }
-    }
-    Ok(())
-}
-
-/// The authorization rules of the commands of a configuration.
+/// The access control list of the rules of a partition revision (SPECIFICATIONS 9.3): each rule
+/// is a grant on its point. A rule with an unknown identity level is read as the finest one,
+/// which refuses the most.
 #[must_use]
-pub fn acl_of(commands: &CommandsConfig) -> powermug_command::authorization::Acl {
+pub fn acl_of_rules(rules: &[CommandRule]) -> powermug_command::authorization::Acl {
     use powermug_command::authorization::{Acl, Grant, ValueRule};
     let mut acl = Acl::new();
-    for rule in &commands.acl {
+    for rule in rules {
         acl.grant(
             &rule.point,
             Grant {

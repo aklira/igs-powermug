@@ -65,6 +65,15 @@ pub trait CommandGateway: Send + Sync {
     /// the content identifier now active, or `None`. The commands of the partition must cite it.
     fn active_revision_changed(&self, _partition: &str, _revision: Option<&str>) {}
 
+    /// The command rules of a partition are those of its active revision: `rules` replaces the
+    /// access control list of the partition (SPECIFICATIONS 10.3, 9.3).
+    fn active_rules_changed(
+        &self,
+        _partition: &str,
+        _rules: &[powermug_revision::partition::CommandRule],
+    ) {
+    }
+
     /// An activation that is critical for commands starts (FUN-CFG-007): the commands of the
     /// partition are blocked and the ones in flight classified, until the revision is active
     /// (`active_revision_changed`) or the activation fails (`abort_critical_change`).

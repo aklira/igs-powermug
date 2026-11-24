@@ -6,6 +6,7 @@ mod common;
 
 use common::*;
 use ed25519_dalek::VerifyingKey;
+use powermug_revision::canonical::canonical_bytes;
 use powermug_store::CriticalStore;
 
 /// The key the API trusts in the tests of this file.
@@ -16,10 +17,16 @@ fn trusted() -> VerifyingKey {
 /// The store with two revisions of partition S3, the second one active.
 fn store(dir: &tempfile::TempDir) -> CriticalStore {
     let mut store = CriticalStore::open(dir.path().join("critical.db")).expect("opens");
-    store.prepare("r1", "S3", None, b"1").expect("prepares r1");
+    // The bodies are partition documents: a rollback reads the command rules of the revision it
+    // restores.
+    let first = canonical_bytes(&sealed_document("S3", None, "A")).expect("canonical");
+    let second = canonical_bytes(&sealed_document("S3", Some("r1"), "A")).expect("canonical");
+    store
+        .prepare("r1", "S3", None, &first)
+        .expect("prepares r1");
     store.activate("r1", "S3").expect("activates r1");
     store
-        .prepare("r2", "S3", Some("r1"), b"2")
+        .prepare("r2", "S3", Some("r1"), &second)
         .expect("prepares r2");
     store.activate("r2", "S3").expect("activates r2");
     store

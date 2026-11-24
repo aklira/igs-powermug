@@ -141,6 +141,11 @@ impl Dispatcher {
         self.active_revision = revision;
     }
 
+    /// Sets the access control list: the command rules of the active revision.
+    pub fn set_acl(&mut self, acl: powermug_command::authorization::Acl) {
+        self.acl = acl;
+    }
+
     /// Blocks the commands of this session for a critical change (FUN-CFG-007, FUN-CMD-011):
     /// no new command is accepted and no selected command is executed until
     /// [`Dispatcher::unblock`]. The emissions still open are classified `IN_DOUBT`, since
@@ -501,6 +506,20 @@ impl Gateway {
 }
 
 impl powermug_mgmt::CommandGateway for Gateway {
+    fn active_rules_changed(
+        &self,
+        partition: &str,
+        rules: &[powermug_revision::partition::CommandRule],
+    ) {
+        for route in self.partition_routes(partition) {
+            route
+                .dispatcher
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .set_acl(crate::config::acl_of_rules(rules));
+        }
+    }
+
     fn active_revision_changed(&self, partition: &str, revision: Option<&str>) {
         for route in self.partition_routes(partition) {
             let mut dispatcher = route

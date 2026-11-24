@@ -292,7 +292,9 @@ async fn rollback(
     let outcome = store.rollback(&request.site, &active)?;
     let active = store.active(&request.site)?;
     drop(store);
+    let rules = rules_of(&api, active.as_deref())?;
     if let Some(gateway) = api.gateway.as_ref() {
+        gateway.active_rules_changed(&request.site, &rules);
         gateway.active_revision_changed(&request.site, active.as_deref());
     }
     Ok(Json(json!({
@@ -404,6 +406,45 @@ async fn prepare(
     })))
 }
 
+/// A revision stored by an earlier call, read back as a partition revision.
+fn stored_revision(
+    api: &Api,
+    id: &str,
+) -> Result<powermug_revision::partition::PartitionRevision, ApiError> {
+    let stored = api.store().body(id)?.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "missing_revision",
+            format!("the active revision {id} has no stored body"),
+        )
+    })?;
+    let document: Value = serde_json::from_slice(&stored).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "stored_revision_unreadable",
+            err.to_string(),
+        )
+    })?;
+    powermug_revision::partition::parse(&document).map_err(|finding| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "stored_revision_unreadable",
+            finding.message,
+        )
+    })
+}
+
+/// The command rules of the revision active in a scope: none when no revision is active.
+fn rules_of(
+    api: &Api,
+    active: Option<&str>,
+) -> Result<Vec<powermug_revision::partition::CommandRule>, ApiError> {
+    match active {
+        Some(id) => Ok(stored_revision(api, id)?.spec.commands),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// Whether activating `verified` changes the commands of its partition in a way that blocks them
 /// (`COMMAND_CRITICAL`, FUN-CFG-007): the class of the change against the revision now active in
 /// its scope. Nothing active yet, or the same revision, is not a change.
@@ -414,27 +455,7 @@ fn command_critical_change(api: &Api, verified: &Verified) -> Result<bool, ApiEr
     if previous_id == verified.id {
         return Ok(false);
     }
-    let stored = api.store().body(&previous_id)?.ok_or_else(|| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "missing_revision",
-            format!("the active revision {previous_id} has no stored body"),
-        )
-    })?;
-    let previous_document: Value = serde_json::from_slice(&stored).map_err(|err| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "stored_revision_unreadable",
-            err.to_string(),
-        )
-    })?;
-    let before = powermug_revision::partition::parse(&previous_document).map_err(|finding| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "stored_revision_unreadable",
-            finding.message,
-        )
-    })?;
+    let before = stored_revision(api, &previous_id)?;
     let after = powermug_revision::partition::parse(&verified.document).map_err(|finding| {
         ApiError::new(StatusCode::BAD_REQUEST, "invalid_document", finding.message)
     })?;
@@ -487,7 +508,19 @@ async fn activate(
             return Err(ApiError::from(err));
         }
     };
+    let rules = match rules_of(&api, active.as_deref()) {
+        Ok(rules) => rules,
+        Err(err) => {
+            if critical {
+                if let Some(gateway) = gateway {
+                    gateway.abort_critical_change(&verified.scope);
+                }
+            }
+            return Err(err);
+        }
+    };
     if let Some(gateway) = gateway {
+        gateway.active_rules_changed(&verified.scope, &rules);
         gateway.active_revision_changed(&verified.scope, active.as_deref());
     }
     Ok(Json(json!({

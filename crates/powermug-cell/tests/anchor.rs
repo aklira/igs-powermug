@@ -98,13 +98,13 @@ const CONFIG: &str = r#"{
   },
   "lanes": [{"site": "S3", "revision": 1, "points": [
     {"id": "S3/TC_101", "session": 1, "address": 5, "class": "A"}]}],
-  "commands": {"acl": []}
+  "commands": {}
 }"#;
 
 fn with_anchor(anchor: &str) -> String {
     CONFIG.replace(
-        "\"commands\": {\"acl\": []}",
-        &format!("\"commands\": {{\"audit_anchor\": {anchor}, \"acl\": []}}"),
+        "\"commands\": {}",
+        &format!("\"commands\": {{\"audit_anchor\": {anchor}}}"),
     )
 }
 

@@ -52,6 +52,8 @@ pub enum CellError {
     Sandbox(#[from] powermug_sandbox::SandboxError),
     #[error(transparent)]
     Command(#[from] powermug_command::CommandError),
+    #[error("a stored revision cannot be read: {0}")]
+    StoredRevision(String),
 }
 
 /// The indicators of the cell: those of every lane, measured together.
@@ -115,21 +117,29 @@ impl Cell {
         // grants a command and the partition has an owner, every command is refused. Its
         // commands must cite the partition's active revision, read from the critical store.
         let mut commands_by_session = std::collections::BTreeMap::new();
-        let acl = config::acl_of(&config.commands);
+        // The rules are the command rules of the active revision of the instance's partition.
         let mut active_of_session = std::collections::BTreeMap::new();
         for instance in adapters::instances(config)? {
             let site = &config.lanes[instance.lane].site;
-            active_of_session.insert(instance.session, critical.active(site)?);
+            let revision = critical.active(site)?;
+            let rules = match &revision {
+                Some(id) => stored_rules(&critical, id)?,
+                None => Vec::new(),
+            };
+            active_of_session.insert(instance.session, (revision, rules));
         }
         for instance in adapters::instances(config)? {
             let route = commands::CommandRoute::new();
+            let (revision, rules) = active_of_session
+                .remove(&instance.session)
+                .unwrap_or_default();
             let mut dispatcher = commands::Dispatcher::new(
                 commands.clone(),
-                acl.clone(),
+                config::acl_of_rules(&rules),
                 powermug_command::ownership::Ownership::new(),
                 route.clone(),
             );
-            dispatcher.set_active_revision(active_of_session.remove(&instance.session).flatten());
+            dispatcher.set_active_revision(revision);
             commands_by_session.insert(
                 instance.session,
                 adapters::CommandLink {
@@ -193,6 +203,21 @@ impl Cell {
         writer.join();
         commands.join();
     }
+}
+
+/// The command rules of a stored revision.
+fn stored_rules(
+    critical: &CriticalStore,
+    id: &str,
+) -> Result<Vec<powermug_revision::partition::CommandRule>, CellError> {
+    let body = critical.body(id)?.ok_or_else(|| {
+        CellError::StoredRevision(format!("the active revision {id} has no stored body"))
+    })?;
+    let document: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|err| CellError::StoredRevision(err.to_string()))?;
+    let revision = powermug_revision::partition::parse(&document)
+        .map_err(|finding| CellError::StoredRevision(finding.message))?;
+    Ok(revision.spec.commands)
 }
 
 /// Reads a file the configuration names.
