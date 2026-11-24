@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 
+use crate::audit;
 use crate::authorization::Mode;
 use crate::journal::{
     CommandError, CommandJournal, NewCommand, Recovery, RecoveryContext, Submission, Transition,
@@ -34,6 +35,7 @@ enum Request {
     State(String, Sender<Result<Option<State>, CommandError>>),
     VerifyAudit(Sender<Result<u64, CommandError>>),
     AuditHead(Sender<Result<[u8; 32], CommandError>>),
+    ExportAudit(Sender<Result<Vec<audit::ExportedRecord>, CommandError>>),
     GetMode(Sender<Result<Mode, CommandError>>),
     History(String, Sender<Result<Vec<Transition>, CommandError>>),
     CloseNotSent(String, i64, String, Sender<Result<State, CommandError>>),
@@ -90,6 +92,9 @@ impl CommandWriter {
                     }
                     Request::AuditHead(reply) => {
                         let _ = reply.send(journal.audit_head());
+                    }
+                    Request::ExportAudit(reply) => {
+                        let _ = reply.send(journal.export_audit());
                     }
                     Request::GetMode(reply) => {
                         let _ = reply.send(journal.mode());
@@ -221,6 +226,15 @@ impl CommandClient {
     /// Returns the journal's error, or [`CommandError::WriterStopped`].
     pub fn audit_head(&self) -> Result<[u8; 32], CommandError> {
         self.call(Request::AuditHead)
+    }
+
+    /// See [`CommandJournal::export_audit`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error, or [`CommandError::WriterStopped`].
+    pub fn export_audit(&self) -> Result<Vec<audit::ExportedRecord>, CommandError> {
+        self.call(Request::ExportAudit)
     }
 
     /// See [`CommandJournal::mode`].

@@ -148,6 +148,99 @@ pub(crate) fn head(conn: &Connection) -> Result<[u8; 32], CommandError> {
     last.map_or(Ok(GENESIS), |hash| hash_of(&hash))
 }
 
+/// One record of the chain, as exported to a separate domain (NFR-SEC-008). The export carries
+/// the hashes, so that a verifier needs nothing but the export and an anchored head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedRecord {
+    pub seq: i64,
+    pub at_ns: i64,
+    pub kind: String,
+    pub subject: String,
+    pub payload: String,
+    pub prev_hash: [u8; 32],
+    pub hash: [u8; 32],
+}
+
+/// Reads the whole chain, in order, for its export.
+pub(crate) fn export(conn: &Connection) -> Result<Vec<ExportedRecord>, CommandError> {
+    let mut statement = conn.prepare(
+        "SELECT seq, at_ns, kind, subject, payload, prev_hash, hash FROM audit ORDER BY seq",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Vec<u8>>(5)?,
+            row.get::<_, Vec<u8>>(6)?,
+        ))
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        let (seq, at_ns, kind, subject, payload, prev, hash) = row?;
+        records.push(ExportedRecord {
+            seq,
+            at_ns,
+            kind,
+            subject,
+            payload,
+            prev_hash: hash_of(&prev)?,
+            hash: hash_of(&hash)?,
+        });
+    }
+    Ok(records)
+}
+
+/// An exported chain does not verify on its own.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ExportVerifyError {
+    /// The record at `seq` is altered, out of place, or does not follow its predecessor.
+    #[error("the exported chain breaks at record {0}")]
+    Broken(i64),
+    /// The chain is consistent, but it does not end at the anchored head: records were
+    /// removed from its end, or the anchor is not the head of this chain.
+    #[error("the exported chain does not end at the anchored head")]
+    AnchorMismatch,
+}
+
+/// Verifies an exported chain without the store: every record's hash and its link to its
+/// predecessor, from the genesis, and, when `anchor` is given, that the chain ends at it.
+/// Returns the number of records.
+///
+/// # Errors
+///
+/// Returns [`ExportVerifyError::Broken`] at the first record that does not verify, and
+/// [`ExportVerifyError::AnchorMismatch`] when the chain does not end at `anchor`.
+pub fn verify_export(
+    records: &[ExportedRecord],
+    anchor: Option<[u8; 32]>,
+) -> Result<u64, ExportVerifyError> {
+    let mut expected = GENESIS;
+    for (index, record) in records.iter().enumerate() {
+        let position = i64::try_from(index + 1).unwrap_or(i64::MAX);
+        if record.seq != position
+            || record.prev_hash != expected
+            || digest(
+                &record.prev_hash,
+                record.seq,
+                record.at_ns,
+                &record.kind,
+                &record.subject,
+                &record.payload,
+            ) != record.hash
+        {
+            return Err(ExportVerifyError::Broken(record.seq));
+        }
+        expected = record.hash;
+    }
+    if anchor.is_some_and(|anchored| anchored != expected) {
+        return Err(ExportVerifyError::AnchorMismatch);
+    }
+    Ok(u64::try_from(records.len()).unwrap_or(u64::MAX))
+}
+
 /// What the verification of a chain can report.
 #[derive(Debug, Error)]
 pub(crate) enum VerifyError {

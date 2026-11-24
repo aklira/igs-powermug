@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 
+use powermug_command::audit::verify_export;
 use powermug_command::Granularity;
 use powermug_command::{CommandWriter, NewCommand, State, Submission};
 
@@ -56,6 +57,11 @@ fn requests_from_several_threads_are_each_answered_by_the_one_writer() {
         Some(State::Validated)
     );
     assert_eq!(client.verify_audit(), Ok(200));
+    let exported = client.export_audit().expect("exports");
+    assert_eq!(
+        verify_export(&exported, Some(client.audit_head().expect("head"))),
+        Ok(200)
+    );
     drop(client);
     writer.join();
 }

@@ -1,7 +1,7 @@
 //! The hash-chained audit records (SPECIFICATIONS 9.2, NFR-SEC-008): every command write is
 //! recorded, the chain verifies, and an altered record is found at its position.
 
-use powermug_command::audit::GENESIS;
+use powermug_command::audit::{verify_export, ExportVerifyError, GENESIS};
 use powermug_command::Granularity;
 use powermug_command::{CommandError, CommandJournal, NewCommand, RecoveryContext, State};
 
@@ -124,4 +124,89 @@ fn removing_the_last_record_is_visible_only_against_an_anchored_head() {
     // The chain itself still verifies: the head shows the removal.
     assert_eq!(journal.verify_audit(), Ok(1));
     assert_ne!(journal.audit_head().expect("head"), anchored);
+}
+
+#[test]
+fn an_export_verifies_on_its_own_against_the_anchored_head() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut journal = CommandJournal::open(journal_path(&dir)).expect("opens");
+    journal.submit(&command("c1"), T0).expect("submits");
+    journal
+        .move_to("c1", State::Validated, T0, "")
+        .expect("validated");
+    let anchored = journal.audit_head().expect("head");
+
+    let records = journal.export_audit().expect("exports");
+    assert_eq!(records.len(), 2);
+    assert_eq!(verify_export(&records, Some(anchored)), Ok(2));
+    assert_eq!(verify_export(&records, None), Ok(2));
+}
+
+#[test]
+fn an_altered_exported_record_is_found_at_its_position() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut journal = CommandJournal::open(journal_path(&dir)).expect("opens");
+    journal.submit(&command("c1"), T0).expect("submits");
+    journal
+        .move_to("c1", State::Validated, T0, "")
+        .expect("validated");
+    let mut records = journal.export_audit().expect("exports");
+    records[1].payload = "forged".into();
+
+    assert_eq!(
+        verify_export(&records, None),
+        Err(ExportVerifyError::Broken(2))
+    );
+}
+
+#[test]
+fn a_record_removed_from_the_middle_breaks_the_exported_chain() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut journal = CommandJournal::open(journal_path(&dir)).expect("opens");
+    journal.submit(&command("c1"), T0).expect("submits");
+    journal
+        .move_to("c1", State::Validated, T0, "")
+        .expect("validated");
+    journal
+        .move_to("c1", State::DurablyAccepted, T0, "")
+        .expect("accepted");
+    let mut records = journal.export_audit().expect("exports");
+    records.remove(1);
+
+    assert_eq!(
+        verify_export(&records, None),
+        Err(ExportVerifyError::Broken(3))
+    );
+}
+
+#[test]
+fn a_record_removed_from_the_end_is_visible_only_against_the_anchored_head() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut journal = CommandJournal::open(journal_path(&dir)).expect("opens");
+    journal.submit(&command("c1"), T0).expect("submits");
+    journal
+        .move_to("c1", State::Validated, T0, "")
+        .expect("validated");
+    journal
+        .move_to("c1", State::DurablyAccepted, T0, "")
+        .expect("accepted");
+    let anchored = journal.audit_head().expect("head");
+
+    let mut records = journal.export_audit().expect("exports");
+    records.pop();
+
+    assert_eq!(verify_export(&records, None), Ok(2));
+    assert_eq!(
+        verify_export(&records, Some(anchored)),
+        Err(ExportVerifyError::AnchorMismatch)
+    );
+}
+
+#[test]
+fn an_empty_export_verifies_against_the_genesis() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let journal = CommandJournal::open(journal_path(&dir)).expect("opens");
+    let records = journal.export_audit().expect("exports");
+    assert_eq!(records.len(), 0);
+    assert_eq!(verify_export(&records, Some(GENESIS)), Ok(0));
 }

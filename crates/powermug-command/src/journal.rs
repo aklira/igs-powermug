@@ -796,4 +796,14 @@ impl CommandJournal {
     pub fn audit_head(&self) -> Result<[u8; 32], CommandError> {
         audit::head(&self.conn)
     }
+
+    /// The whole chain, for its export to a separate domain (NFR-SEC-008). Check it with
+    /// [`audit::verify_export`] against an anchored head.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::Database`] on a read failure.
+    pub fn export_audit(&self) -> Result<Vec<audit::ExportedRecord>, CommandError> {
+        audit::export(&self.conn)
+    }
 }
