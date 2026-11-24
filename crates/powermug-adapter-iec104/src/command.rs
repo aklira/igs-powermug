@@ -11,7 +11,7 @@
 
 use igs_iec104::client::{Client, ClientError};
 use igs_iec104_codec::asdu::{Asdu, Body, Objects};
-use igs_iec104_codec::elements::{Dco, DoubleCommandState, Qoc, Qos, Sco, ShortFloat};
+use igs_iec104_codec::elements::{Dco, DoubleCommandState, Nva, Qoc, Qos, Sco, ShortFloat, Sva};
 use igs_iec104_codec::header::{cause, InformationObjectAddress};
 use thiserror::Error;
 
@@ -48,6 +48,28 @@ pub struct SetPointFloat {
     pub select: bool,
 }
 
+/// A normalized set point: a value in -1 to +1 (`C_SE_NA_1`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SetPointNormalized {
+    /// The information object address of the set point.
+    pub address: u32,
+    /// The value, on the F16 grid: a multiple of 2^-15 in [-1, 1 - 2^-15].
+    pub value: f32,
+    /// Select (`true`) or execute (`false`), for select-before-operate.
+    pub select: bool,
+}
+
+/// A scaled set point: a 16-bit signed integer (`C_SE_NB_1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetPointScaled {
+    /// The information object address of the set point.
+    pub address: u32,
+    /// The value.
+    pub value: i16,
+    /// Select (`true`) or execute (`false`), for select-before-operate.
+    pub select: bool,
+}
+
 /// What the station answered to a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
@@ -66,6 +88,8 @@ pub enum CommandError {
     Address(u32),
     #[error("the qualifier of the command is not valid")]
     Qualifier,
+    #[error("the value {0} is not representable in the format of the set point")]
+    Value(f32),
     #[error("the client could not send the command: {0}")]
     Client(#[from] ClientError),
     #[error("the command expired at {expires_ns} ns, before its emission at {now_ns} ns")]
@@ -97,11 +121,45 @@ pub async fn send(client: &Client, command: SingleCommand) -> Result<(), Command
         .map_err(CommandError::from)
 }
 
-/// Sends a double command. Like [`send`], it returns once the request is queued.
+/// Sends a normalized set point. Like [`send`], it returns once the request is queued.
+///
+/// # Errors
+///
+/// Returns [`CommandError::Value`] for a value the format cannot carry, and as [`send`].
+pub async fn send_setpoint_normalized(
+    client: &Client,
+    command: SetPointNormalized,
+) -> Result<(), CommandError> {
+    let address = InformationObjectAddress::new(command.address)
+        .ok_or(CommandError::Address(command.address))?;
+    let value = Nva::try_from_f32(command.value).ok_or(CommandError::Value(command.value))?;
+    // QL 0: the default qualifier, no additional definition.
+    let qualifier = Qos::new(0, command.select).ok_or(CommandError::Qualifier)?;
+    client
+        .set_point_normalized(address, value, qualifier, None)
+        .await
+        .map_err(CommandError::from)
+}
+
+/// Sends a scaled set point. Like [`send`], it returns once the request is queued.
 ///
 /// # Errors
 ///
 /// As [`send`].
+pub async fn send_setpoint_scaled(
+    client: &Client,
+    command: SetPointScaled,
+) -> Result<(), CommandError> {
+    let address = InformationObjectAddress::new(command.address)
+        .ok_or(CommandError::Address(command.address))?;
+    // QL 0: the default qualifier, no additional definition.
+    let qualifier = Qos::new(0, command.select).ok_or(CommandError::Qualifier)?;
+    client
+        .set_point_scaled(address, Sva::new(command.value), qualifier, None)
+        .await
+        .map_err(CommandError::from)
+}
+
 /// Sends a set point with a short floating point value. Like [`send`], it returns once the
 /// request is queued.
 ///
@@ -173,6 +231,8 @@ pub fn answer(asdu: &Asdu) -> Option<(u32, Answer)> {
     let address = match &asdu.body {
         Body::C_SC_NA_1(objects) => first_address(objects)?,
         Body::C_DC_NA_1(objects) => first_address(objects)?,
+        Body::C_SE_NA_1(objects) => first_address(objects)?,
+        Body::C_SE_NB_1(objects) => first_address(objects)?,
         Body::C_SE_NC_1(objects) => first_address(objects)?,
         _ => return None,
     };
