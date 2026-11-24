@@ -256,3 +256,22 @@ fn a_command_with_no_adapter_stream_attached_is_failed_and_never_queued() {
     drop(dispatcher);
     writer.join();
 }
+
+#[test]
+fn the_activation_epoch_is_the_owner_epoch_and_zero_without_a_confirmed_owner() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (client, writer) = CommandWriter::spawn(dir.path().join("critical.db")).expect("spawns");
+    let (to_adapter, _queued) = channel(8);
+    let route = CommandRoute::new();
+    route.attach(to_adapter);
+    let mut ownership = owned();
+    let dispatcher = Dispatcher::new(client.clone(), acl(), ownership.clone(), route);
+    assert_eq!(dispatcher.activation_epoch("S3"), 1);
+    assert_eq!(dispatcher.activation_epoch("S4"), 0);
+    ownership.release("S3", powermug_command::ownership::Owner::Ceding);
+    let ceding = Dispatcher::new(client, acl(), ownership, CommandRoute::new());
+    assert_eq!(ceding.activation_epoch("S3"), 0);
+    drop(dispatcher);
+    drop(ceding);
+    writer.join();
+}

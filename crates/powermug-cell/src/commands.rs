@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use powermug_command::authorization::{authorize, Acl};
 use powermug_command::authorization::{Request as AclRequest, Value};
 use powermug_command::dispatch::admit_submission;
-use powermug_command::ownership::Ownership;
+use powermug_command::ownership::{Owner, Ownership};
 use powermug_command::{
     CommandClient, CommandError, Emission, Granularity, NewCommand, Outcome, State, Submission,
 };
@@ -202,6 +202,17 @@ impl Dispatcher {
             State::ExecuteSent
         };
         self.emit(&request.command_id, to, request.select, now_ns)
+    }
+
+    /// The owner epoch a South session is activated at: the confirmed owner's epoch for the
+    /// partition, or 0 when the partition has no confirmed owner (PM-CMD-005). A dispatch of
+    /// another epoch is refused by the adapter.
+    #[must_use]
+    pub fn activation_epoch(&self, partition: &str) -> u64 {
+        match self.ownership.owner(partition) {
+            Owner::Confirmed { epoch } => epoch,
+            Owner::Ceding | Owner::Shadow | Owner::Unowned => 0,
+        }
     }
 
     /// Sends the execution of a selected command, once its selection is confirmed. Returns the

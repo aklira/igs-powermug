@@ -130,7 +130,7 @@ pub fn instances(config: &CellConfig) -> Result<Vec<Instance>, ConfigError> {
                 directory: directory.clone(),
                 lane: index,
                 settings: Settings {
-                    // Not yet taken from the partition's ownership: see PROGRESS.md.
+                    // Set at each start from the partition's ownership.
                     owner_epoch: 0,
                     stations: item.stations.clone(),
                     common_address: item.common_address,
@@ -249,6 +249,14 @@ async fn run_once(
     };
     let mut settings = instance.settings.clone();
     settings.artifact_sha256 = digest;
+    // The epoch the session is activated at: a dispatch of another epoch is refused (PM-CMD-005).
+    if let Some(link) = commands {
+        settings.owner_epoch = link
+            .dispatcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .activation_epoch(&instance.settings.site_id);
+    }
     let settings_path = instance.directory.join("settings.json");
     let written = std::fs::create_dir_all(&instance.directory).and_then(|()| {
         let text = serde_json::to_string_pretty(&settings).map_err(std::io::Error::other)?;
