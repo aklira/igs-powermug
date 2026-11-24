@@ -82,6 +82,8 @@ pub struct Cell {
     commands: powermug_command::CommandWriter,
     /// A journal client for the audit anchoring, which reads the head of the chain.
     audit: powermug_command::CommandClient,
+    /// The commands the restart rules decided when the cell opened, by partition.
+    pub recovery: Vec<powermug_command::Recovery>,
 }
 
 impl Cell {
@@ -127,6 +129,24 @@ impl Cell {
                 None => Vec::new(),
             };
             active_of_session.insert(instance.session, (revision, rules));
+        }
+        // The restart rules of the commands run before any South session is activated
+        // (SPECIFICATIONS 9.7, GW 11.5). Ownership is not kept across a restart, so the owner
+        // epoch is 0: a command emitted under an earlier owner fails rather than being sent again.
+        let mut recovery = Vec::new();
+        let sites: std::collections::BTreeSet<&str> =
+            config.lanes.iter().map(|lane| lane.site.as_str()).collect();
+        for site in sites {
+            let revision = critical.active(site)?;
+            recovery.extend(commands.recover_partition(
+                site,
+                powermug_command::RecoveryContext {
+                    now_ns: commands::now_ns(),
+                    active_revision: revision.unwrap_or_default(),
+                    owner_epoch: 0,
+                    ha_active: true,
+                },
+            )?);
         }
         for instance in adapters::instances(config)? {
             let route = commands::CommandRoute::new();
@@ -175,6 +195,7 @@ impl Cell {
             writer,
             commands: command_writer,
             audit,
+            recovery,
         })
     }
 
@@ -193,6 +214,7 @@ impl Cell {
             writer,
             commands,
             audit,
+            recovery: _,
         } = self;
         drop(api);
         drop(lanes);

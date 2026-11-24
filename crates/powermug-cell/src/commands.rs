@@ -616,7 +616,7 @@ impl powermug_mgmt::CommandGateway for Gateway {
 }
 
 /// The wall-clock time in nanoseconds since the epoch.
-fn now_ns() -> i64 {
+pub(crate) fn now_ns() -> i64 {
     i64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

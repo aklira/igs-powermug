@@ -32,6 +32,11 @@ enum Request {
         Sender<Result<State, CommandError>>,
     ),
     Recover(RecoveryContext, Sender<Result<Vec<Recovery>, CommandError>>),
+    RecoverPartition(
+        String,
+        RecoveryContext,
+        Sender<Result<Vec<Recovery>, CommandError>>,
+    ),
     State(String, Sender<Result<Option<State>, CommandError>>),
     VerifyAudit(Sender<Result<u64, CommandError>>),
     AuditHead(Sender<Result<[u8; 32], CommandError>>),
@@ -83,6 +88,9 @@ impl CommandWriter {
                     }
                     Request::Recover(context, reply) => {
                         let _ = reply.send(journal.recover(&context));
+                    }
+                    Request::RecoverPartition(partition, context, reply) => {
+                        let _ = reply.send(journal.recover_partition(&partition, &context));
                     }
                     Request::State(id, reply) => {
                         let _ = reply.send(journal.state(&id));
@@ -199,6 +207,19 @@ impl CommandClient {
     /// Returns the journal's error, or [`CommandError::WriterStopped`].
     pub fn recover(&self, context: RecoveryContext) -> Result<Vec<Recovery>, CommandError> {
         self.call(|reply| Request::Recover(context, reply))
+    }
+
+    /// See [`CommandJournal::recover_partition`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error, or [`CommandError::WriterStopped`].
+    pub fn recover_partition(
+        &self,
+        partition: &str,
+        context: RecoveryContext,
+    ) -> Result<Vec<Recovery>, CommandError> {
+        self.call(|reply| Request::RecoverPartition(partition.to_owned(), context, reply))
     }
 
     /// See [`CommandJournal::state`].

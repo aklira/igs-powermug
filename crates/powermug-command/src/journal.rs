@@ -636,10 +636,37 @@ impl CommandJournal {
     ///
     /// Returns [`CommandError::Database`] on a failure; nothing is changed then.
     pub fn recover(&mut self, context: &RecoveryContext) -> Result<Vec<Recovery>, CommandError> {
+        self.recover_matching(context, |_| true)
+    }
+
+    /// The restart rules of [`CommandJournal::recover`], for the commands of one partition: the
+    /// points of a partition are prefixed by its site (FUN-SCA-010), as `S3/`. The commands of
+    /// the other partitions are not touched.
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error; nothing is changed for the commands after the failure.
+    pub fn recover_partition(
+        &mut self,
+        partition: &str,
+        context: &RecoveryContext,
+    ) -> Result<Vec<Recovery>, CommandError> {
+        let prefix = format!("{partition}/");
+        self.recover_matching(context, |point| point.starts_with(&prefix))
+    }
+
+    fn recover_matching(
+        &mut self,
+        context: &RecoveryContext,
+        selects: impl Fn(&str) -> bool,
+    ) -> Result<Vec<Recovery>, CommandError> {
         let tx = self.conn.transaction()?;
         let pending = pending_commands(&tx)?;
         let mut outcome = Vec::new();
-        for command in pending {
+        for command in pending
+            .into_iter()
+            .filter(|command| selects(&command.point))
+        {
             let (next, action) = decide(&command, context);
             // An intent written before the network call and never closed: the frame may or may
             // not have left. The command is in doubt, and it is never replayed (PM-CMD-002).
@@ -692,6 +719,7 @@ impl CommandJournal {
 /// A command that is not terminal, as the restart rules read it.
 struct Pending {
     id: String,
+    point: String,
     state: State,
     expires_ns: i64,
     owner_epoch: i64,
@@ -700,25 +728,27 @@ struct Pending {
 
 fn pending_commands(tx: &Transaction<'_>) -> Result<Vec<Pending>, CommandError> {
     let mut statement = tx.prepare(
-        "SELECT command_id, state, expires_ns, owner_epoch, expected_revision
+        "SELECT command_id, point, state, expires_ns, owner_epoch, expected_revision
          FROM commands ORDER BY created_ns, command_id",
     )?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
+            row.get::<_, String>(2)?,
             row.get::<_, i64>(3)?,
-            row.get::<_, String>(4)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, String>(5)?,
         ))
     })?;
     let mut pending = Vec::new();
     for row in rows {
-        let (id, code, expires_ns, owner_epoch, expected_revision) = row?;
+        let (id, point, code, expires_ns, owner_epoch, expected_revision) = row?;
         let state = read_state(&code)?;
         if !state.is_terminal() {
             pending.push(Pending {
                 id,
+                point,
                 state,
                 expires_ns,
                 owner_epoch,
