@@ -189,6 +189,24 @@ impl Supervisor {
         self.state = State::Stopped;
     }
 
+    /// A planned restart: the running process is replaced, for a reason that is not a failure
+    /// (a new owner epoch, for instance). It does not count as a crash, so it neither delays
+    /// the next start nor uses the restart budget.
+    ///
+    /// # Errors
+    ///
+    /// Refused unless the state is `Running`.
+    pub fn restart_now(&mut self) -> Result<(), Refusal> {
+        match self.state {
+            State::Running => {
+                self.running_since = None;
+                self.state = State::Spawning;
+                Ok(())
+            }
+            other => Err(Refusal::WrongState(other)),
+        }
+    }
+
     /// Delay after `failures` consecutive exits: `initial * 2^(failures-1)`, capped at the
     /// maximum, then reduced by jitter to a value between half and all of it.
     fn delay(&self, jitter: f64) -> Duration {
@@ -321,6 +339,23 @@ mod tests {
         assert!(sup.restart_due(now + Duration::from_secs(3600)).is_err());
         sup.release().unwrap();
         assert_eq!(sup.state(), State::Spawning);
+    }
+
+    #[test]
+    fn a_planned_restart_neither_delays_nor_counts_as_a_crash() {
+        let mut sup = Supervisor::new(Policy::default());
+        let now = origin();
+        sup.started(now).unwrap();
+        sup.restart_now().unwrap();
+        assert_eq!(sup.state(), State::Spawning);
+        // Refused when not running: a planned restart is for a live process.
+        assert!(sup.restart_now().is_err());
+        // The next start is immediate, and a crash after it is the first failure: 1 s.
+        sup.started(now).unwrap();
+        let Decision::RestartAt(at) = sup.crashed(now, 1.0).unwrap() else {
+            panic!("restart expected");
+        };
+        assert_eq!(at - now, Duration::from_secs(1));
     }
 
     #[test]

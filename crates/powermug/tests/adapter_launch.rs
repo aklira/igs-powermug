@@ -597,3 +597,81 @@ async fn a_station_that_stops_degrades_its_points_in_under_two_seconds() {
         "degraded after {elapsed:?}"
     );
 }
+
+#[tokio::test]
+async fn a_takeover_restarts_the_instance_with_the_new_epoch() {
+    // A takeover of the partition while the instance runs: the cell replaces the process, so
+    // that the adapter is activated at the new owner epoch (PM-CMD-005).
+    use powermug_cell::adapters::CommandLink;
+    use powermug_cell::commands::{CommandRoute, Dispatcher};
+    use powermug_command::authorization::Acl;
+    use powermug_command::ownership::Ownership;
+    use powermug_command::CommandWriter;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let station = start_station().await;
+    let config = configuration(dir.path(), station.addr, BIN);
+    let lane = lane_of(&config, dir.path());
+    let instance = instances(&config).expect("instances").remove(0);
+
+    let (commands, writer) =
+        CommandWriter::spawn(dir.path().join("critical.db")).expect("journal spawns");
+    let route = CommandRoute::new();
+    let link = CommandLink {
+        dispatcher: std::sync::Arc::new(std::sync::Mutex::new(Dispatcher::new(
+            commands.clone(),
+            Acl::new(),
+            Ownership::new(),
+            route.clone(),
+        ))),
+        route,
+    };
+
+    let (stop, stopped) = watch::channel(false);
+    let supervisor = tokio::spawn(supervise(
+        instance,
+        Arc::clone(&lane),
+        Policy::default(),
+        stopped,
+        Some(link.clone()),
+    ));
+    let watched = Arc::clone(&lane);
+    let fed = wait_until(
+        || {
+            watched
+                .lock()
+                .expect("lock")
+                .image()
+                .get(PointIndex(0))
+                .is_some()
+        },
+        30,
+    )
+    .await;
+    assert!(fed, "the lane did not receive a value before the takeover");
+    let before = adapter_pids(dir.path());
+    assert_eq!(before.len(), 1, "{before:?}");
+
+    let epoch = link.dispatcher.lock().expect("lock").takeover("S3");
+    assert_eq!(epoch, 1);
+    // The partition of the instance is its site: the takeover is of that partition.
+    let restarted = wait_until(
+        || {
+            let now = adapter_pids(dir.path());
+            now.len() == 1 && now != before
+        },
+        30,
+    )
+    .await;
+    let after = adapter_pids(dir.path());
+
+    let _ = stop.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(15), supervisor).await;
+    let _ = station.stop.send(());
+    let _ = station.task.await;
+    drop(link);
+    drop(commands);
+    writer.join();
+
+    assert!(restarted, "the instance was not restarted: {after:?}");
+}

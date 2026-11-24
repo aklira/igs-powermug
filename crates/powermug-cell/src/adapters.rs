@@ -187,6 +187,16 @@ pub async fn supervise(
         let reason = match run_once(&instance, &lane, &clock, &mut stop, commands.as_ref()).await {
             Cycle::Stopped => return Outcome::Stopped,
             Cycle::Ended(reason) => reason,
+            Cycle::Reconfigured => {
+                eprintln!(
+                    "adapter of session {}: restarted with a new owner epoch",
+                    instance.session
+                );
+                if supervisor.restart_now().is_err() {
+                    return Outcome::Stopped;
+                }
+                continue;
+            }
         };
         eprintln!("adapter of session {}: {reason}", instance.session);
         // PM-ADP-003 step 2: the session's points degrade at once.
@@ -216,6 +226,8 @@ pub async fn supervise(
 enum Cycle {
     Stopped,
     Ended(String),
+    /// The owner epoch changed while the process ran: a planned restart, not a failure.
+    Reconfigured,
 }
 
 /// Silence after which an instance is dead: three missed reports of one second (§6.3).
@@ -225,6 +237,8 @@ const HEALTH_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 enum End {
     /// The process exited, or could not be waited for.
     Exited(String),
+    /// The owner epoch changed: the process is replaced with the new epoch.
+    Reconfigured,
     /// No health report within the window: the process is killed (§6.3).
     Silent,
     /// The core's server ended before the process did.
@@ -250,13 +264,7 @@ async fn run_once(
     let mut settings = instance.settings.clone();
     settings.artifact_sha256 = digest;
     // The epoch the session is activated at: a dispatch of another epoch is refused (PM-CMD-005).
-    if let Some(link) = commands {
-        settings.owner_epoch = link
-            .dispatcher
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .activation_epoch(&instance.settings.site_id);
-    }
+    settings.owner_epoch = activation_epoch_of(commands, &instance.settings.site_id);
     let settings_path = instance.directory.join("settings.json");
     let written = std::fs::create_dir_all(&instance.directory).and_then(|()| {
         let text = serde_json::to_string_pretty(&settings).map_err(std::io::Error::other)?;
@@ -319,6 +327,7 @@ async fn run_once(
     // make the instance a crash, and the process is killed.
     let silence = tokio::time::sleep(HEALTH_WINDOW);
     tokio::pin!(silence);
+    let mut epoch_check = tokio::time::interval(EPOCH_CHECK);
     let end = loop {
         tokio::select! {
             status = child.wait() => break End::Exited(match status {
@@ -333,6 +342,12 @@ async fn run_once(
             }),
             () = heartbeat.notified() => silence.as_mut().reset(tokio::time::Instant::now() + HEALTH_WINDOW),
             () = &mut silence => break End::Silent,
+            _ = epoch_check.tick() => {
+                // A takeover during the cycle: the process is replaced with the new epoch.
+                if activation_epoch_of(commands, &instance.settings.site_id) != settings.owner_epoch {
+                    break End::Reconfigured;
+                }
+            }
         }
     };
     // The process goes with its contract: a stopped server leaves no channel behind.
@@ -346,6 +361,7 @@ async fn run_once(
     match end {
         End::Exited(reason) | End::ServerFailed(reason) => Cycle::Ended(reason),
         End::Silent => Cycle::Ended("no health report for 3 s: the process is killed".into()),
+        End::Reconfigured => Cycle::Reconfigured,
         End::Stopped => Cycle::Stopped,
     }
 }
@@ -453,6 +469,9 @@ async fn release_commands(
 /// Commands a dispatch can wait for in the queue of its stream.
 const COMMAND_QUEUE: usize = 64;
 
+/// How often a running instance checks that its owner epoch is still the one it started with.
+const EPOCH_CHECK: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// The wall clock in nanoseconds, for the expiry and the audit of the command path.
 fn now_ns() -> i64 {
     i64::try_from(
@@ -461,4 +480,14 @@ fn now_ns() -> i64 {
             .map_or(0, |elapsed| elapsed.as_nanos()),
     )
     .unwrap_or(i64::MAX)
+}
+
+/// The owner epoch the session of `site` is activated at, or 0 without a command path.
+fn activation_epoch_of(commands: Option<&CommandLink>, site: &str) -> u64 {
+    commands.map_or(0, |link| {
+        link.dispatcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .activation_epoch(site)
+    })
 }

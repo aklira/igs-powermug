@@ -27,6 +27,7 @@ powermug-adapter-iec104 = { path = "../powermug-adapter-iec104" }
 tokio = { version = "1", features = ["net", "rt", "time"] }
 
 [dev-dependencies]
+powermug-command = { path = "../powermug-command" }
 igs-iec104 = { version = "0.1.0", default-features = false }
 igs-iec104-codec = "0.1.0"
 powermug-cell = { path = "../powermug-cell" }

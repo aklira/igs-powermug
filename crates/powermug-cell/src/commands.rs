@@ -204,6 +204,12 @@ impl Dispatcher {
         self.emit(&request.command_id, to, request.select, now_ns)
     }
 
+    /// Takes the partition over: its epoch increases, and this node is the confirmed owner.
+    /// Returns the new epoch.
+    pub fn takeover(&mut self, partition: &str) -> u64 {
+        self.ownership.takeover(partition)
+    }
+
     /// The owner epoch a South session is activated at: the confirmed owner's epoch for the
     /// partition, or 0 when the partition has no confirmed owner (PM-CMD-005). A dispatch of
     /// another epoch is refused by the adapter.
