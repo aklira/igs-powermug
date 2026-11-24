@@ -163,3 +163,40 @@ async fn only_an_activation_critical_for_commands_blocks_them_until_it_takes_eff
         ]
     );
 }
+
+#[tokio::test]
+async fn a_declared_class_below_the_computed_one_is_refused_at_prepare() {
+    let pki = pki();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let events = Arc::new(Events::default());
+    let address = serve_with_gateway(
+        &pki,
+        empty_store(&dir),
+        signing_key(1).verifying_key(),
+        events,
+    )
+    .await;
+    let first = with_rules(None, json!([]));
+    prepare_and_activate(address, &pki, &first).await;
+    let first_id = first["metadata"]["id"].as_str().expect("id").to_owned();
+
+    let mut critical = with_rules(Some(&first_id), json!([rule(&["select"])]));
+    critical["spec"]["change_class"] = json!("HOT");
+    critical["metadata"]["id"] = json!(partition_content_id(&critical).expect("canonical"));
+    let (status, answer) = request(
+        address,
+        client_with_certificate(&pki),
+        "POST",
+        "/revisions/prepare",
+        &plan_body(&critical),
+    )
+    .await
+    .expect("answers");
+    assert_eq!(status, 400, "{answer}");
+    assert!(answer.contains("PMV-CEL-007"), "{answer}");
+
+    // Declared as the change computes to: prepared and activated.
+    critical["spec"]["change_class"] = json!("COMMAND_CRITICAL");
+    critical["metadata"]["id"] = json!(partition_content_id(&critical).expect("canonical"));
+    prepare_and_activate(address, &pki, &critical).await;
+}

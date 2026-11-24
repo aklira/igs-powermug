@@ -196,6 +196,14 @@
     "Spec": {
       "type": "object",
       "properties": {
+        "change_class": {
+          "description": "The change class the author declares: checked against the computed one at activation\n(PMV-CEL-007). Absent means nothing is declared.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "commands": {
           "description": "The access rules of the commandable points (SPECIFICATIONS 10.3, FUN-CMD-003). Absent\nmeans no point is commandable.",
           "type": "array",

@@ -17,6 +17,8 @@ pub enum ChangeClass {
     SessionRestart,
     /// New commands are blocked and in-flight ones are classified before activation.
     CommandCritical,
+    /// The cell restarts. Declared only: no change of this subset computes to it.
+    SystemReboot,
 }
 
 impl ChangeClass {
@@ -27,8 +29,52 @@ impl ChangeClass {
             Self::Hot => "HOT",
             Self::SessionRestart => "SESSION_RESTART",
             Self::CommandCritical => "COMMAND_CRITICAL",
+            Self::SystemReboot => "SYSTEM_REBOOT",
         }
     }
+
+    /// The class named by a document, if it names one.
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "HOT" => Some(Self::Hot),
+            "SESSION_RESTART" => Some(Self::SessionRestart),
+            "COMMAND_CRITICAL" => Some(Self::CommandCritical),
+            "SYSTEM_REBOOT" => Some(Self::SystemReboot),
+            _ => None,
+        }
+    }
+}
+
+/// The findings on the class a revision declares (PMV-CEL-007): a declared class lower than the
+/// computed one is refused. `previous` is the revision active in the scope, if any; without one,
+/// nothing runs yet and the computed class is `HOT`.
+#[must_use]
+pub fn declared_class_findings(
+    next: &PartitionRevision,
+    previous: Option<&PartitionRevision>,
+) -> Vec<crate::validate::Finding> {
+    let Some(declared) = next
+        .spec
+        .change_class
+        .as_deref()
+        .and_then(ChangeClass::from_code)
+    else {
+        return Vec::new();
+    };
+    let computed = previous.map_or(ChangeClass::Hot, |previous| change_class(previous, next));
+    if declared >= computed {
+        return Vec::new();
+    }
+    vec![crate::validate::Finding {
+        code: "PMV-CEL-007",
+        pointer: "/spec/change_class".to_owned(),
+        message: format!(
+            "the declared class {} is lower than the computed class {}",
+            declared.code(),
+            computed.code()
+        ),
+    }]
 }
 
 /// The class of the change from `previous` to `next`.

@@ -157,3 +157,76 @@ fn the_classes_are_ordered_by_cost_and_named_as_in_the_specification() {
     assert_eq!(ChangeClass::SessionRestart.code(), "SESSION_RESTART");
     assert_eq!(ChangeClass::Hot.code(), "HOT");
 }
+
+fn declaring(mut document: Value, class: &str) -> Value {
+    document["spec"]["change_class"] = json!(class);
+    document
+}
+
+#[test]
+fn a_declared_class_names_a_known_class_or_is_refused() {
+    let known = declaring(
+        document("S3", 2404, points(), json!([rule()])),
+        "COMMAND_CRITICAL",
+    );
+    assert_eq!(validate_stage2(&known), Vec::new());
+    let unknown = declaring(document("S3", 2404, points(), json!([rule()])), "FAST");
+    assert_eq!(codes(&unknown), vec!["PMV-SEM-001"]);
+}
+
+#[test]
+fn a_declared_class_below_the_computed_one_is_refused() {
+    use powermug_revision::change::declared_class_findings;
+
+    let before = revision(&document("S3", 2404, points(), json!([rule()])));
+    let mut widened = rule();
+    widened["values"] = json!("any");
+    let critical = document("S3", 2404, points(), json!([widened]));
+
+    let too_low = revision(&declaring(critical.clone(), "HOT"));
+    let findings = declared_class_findings(&too_low, Some(&before));
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.code)
+            .collect::<Vec<_>>(),
+        vec!["PMV-CEL-007"]
+    );
+
+    let declared = revision(&declaring(critical.clone(), "COMMAND_CRITICAL"));
+    assert_eq!(
+        declared_class_findings(&declared, Some(&before)),
+        Vec::new()
+    );
+    let higher = revision(&declaring(critical, "SYSTEM_REBOOT"));
+    assert_eq!(declared_class_findings(&higher, Some(&before)), Vec::new());
+}
+
+#[test]
+fn without_an_active_revision_the_computed_class_is_hot() {
+    use powermug_revision::change::declared_class_findings;
+
+    let first = revision(&declaring(
+        document("S3", 2404, points(), json!([rule()])),
+        "HOT",
+    ));
+    assert_eq!(declared_class_findings(&first, None), Vec::new());
+    let undeclared = revision(&document("S3", 2404, points(), json!([rule()])));
+    assert_eq!(declared_class_findings(&undeclared, None), Vec::new());
+}
+
+#[test]
+fn the_class_names_round_trip_and_order_by_cost() {
+    use powermug_revision::change::ChangeClass;
+
+    for class in [
+        ChangeClass::Hot,
+        ChangeClass::SessionRestart,
+        ChangeClass::CommandCritical,
+        ChangeClass::SystemReboot,
+    ] {
+        assert_eq!(ChangeClass::from_code(class.code()), Some(class));
+    }
+    assert!(ChangeClass::CommandCritical < ChangeClass::SystemReboot);
+    assert_eq!(ChangeClass::from_code("FAST"), None);
+}

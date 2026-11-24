@@ -59,6 +59,10 @@ pub struct Spec {
     /// means no point is commandable.
     #[serde(default)]
     pub commands: Vec<CommandRule>,
+    /// The change class the author declares: checked against the computed one at activation
+    /// (PMV-CEL-007). Absent means nothing is declared.
+    #[serde(default)]
+    pub change_class: Option<String>,
 }
 
 /// One grant on a commandable point: an issuer may run these operations on it, with values in
@@ -333,6 +337,16 @@ pub fn validate_stage2(document: &Value) -> Vec<Finding> {
     let session_ids = check_sessions(&revision, &mut findings);
     check_points(&revision, &session_ids, &mut findings);
     check_commands(&revision, &mut findings);
+    if let Some(declared) = &revision.spec.change_class {
+        if crate::change::ChangeClass::from_code(declared).is_none() {
+            push_finding(
+                &mut findings,
+                "PMV-SEM-001",
+                "/spec/change_class".to_owned(),
+                format!("{declared} is not a change class: HOT, SESSION_RESTART, COMMAND_CRITICAL or SYSTEM_REBOOT"),
+            );
+        }
+    }
     findings.sort();
     findings
 }

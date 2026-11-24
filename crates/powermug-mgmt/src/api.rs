@@ -386,6 +386,21 @@ async fn prepare(
             stage4[0].message.clone(),
         ));
     }
+    // The class the revision declares must not be lower than the one its change computes to.
+    let previous = match active.as_deref() {
+        Some(id) => {
+            let stored = store.body(id)?.ok_or_else(|| missing_body(id))?;
+            Some(parse_stored(&stored)?)
+        }
+        None => None,
+    };
+    let next = powermug_revision::partition::parse(&verified.document)
+        .map_err(|finding| ApiError::invalid_document(vec![finding]))?;
+    let class_findings =
+        powermug_revision::change::declared_class_findings(&next, previous.as_ref());
+    if !class_findings.is_empty() {
+        return Err(ApiError::invalid_document(class_findings));
+    }
     let body = canonical_bytes(&verified.document).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -411,14 +426,24 @@ fn stored_revision(
     api: &Api,
     id: &str,
 ) -> Result<powermug_revision::partition::PartitionRevision, ApiError> {
-    let stored = api.store().body(id)?.ok_or_else(|| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "missing_revision",
-            format!("the active revision {id} has no stored body"),
-        )
-    })?;
-    let document: Value = serde_json::from_slice(&stored).map_err(|err| {
+    let stored = api.store().body(id)?.ok_or_else(|| missing_body(id))?;
+    parse_stored(&stored)
+}
+
+/// The error of an active revision whose stored body is missing.
+fn missing_body(id: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "missing_revision",
+        format!("the active revision {id} has no stored body"),
+    )
+}
+
+/// Reads the stored body of a revision: the canonical bytes of its partition document.
+fn parse_stored(
+    stored: &[u8],
+) -> Result<powermug_revision::partition::PartitionRevision, ApiError> {
+    let document: Value = serde_json::from_slice(stored).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "stored_revision_unreadable",
