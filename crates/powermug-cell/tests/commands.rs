@@ -80,8 +80,10 @@ fn harness(ownership: Ownership) -> Harness {
     let (to_adapter, dispatches) = channel(8);
     let route = CommandRoute::new();
     route.attach(to_adapter);
+    let mut built = Dispatcher::new(client, acl(), ownership, route);
+    built.set_active_revision(Some("r1".into()));
     Harness {
-        dispatcher: Dispatcher::new(client, acl(), ownership, route),
+        dispatcher: built,
         dispatches,
         writer,
         _dir: dir,
@@ -244,6 +246,7 @@ fn a_command_with_no_adapter_stream_attached_is_failed_and_never_queued() {
     route.attach(to_adapter);
     route.detach();
     let mut dispatcher = Dispatcher::new(client, acl(), owned(), route);
+    dispatcher.set_active_revision(Some("r1".into()));
 
     assert_eq!(
         dispatcher
@@ -365,7 +368,7 @@ fn a_block_leaves_an_answered_command_where_it_is() {
 }
 
 #[test]
-fn a_selected_command_is_not_executed_while_blocked_and_is_executed_after_the_unblock() {
+fn a_block_fails_a_confirmed_selection_which_is_never_executed() {
     let mut h = harness(owned());
     h.dispatcher
         .submit(&request("c1", true), 10)
@@ -375,23 +378,79 @@ fn a_selected_command_is_not_executed_while_blocked_and_is_executed_after_the_un
         .update(&answer("c1", pb::CommandStatus::Confirmed), 20)
         .expect("updates");
 
-    h.dispatcher.block(30).expect("blocks");
+    assert_eq!(h.dispatcher.block(30).expect("blocks"), vec![State::Failed]);
     assert_eq!(
         h.dispatcher.execute("c1", "scada-demo", 40),
         Err(CommandError::Blocked("c1".into()))
     );
-    assert!(
-        h.dispatches.try_recv().is_err(),
-        "nothing is executed while blocked"
-    );
-
     h.dispatcher.unblock();
-    assert_eq!(
-        h.dispatcher
-            .execute("c1", "scada-demo", 50)
-            .expect("executes"),
-        State::SelectConfirmed
+    assert!(
+        h.dispatcher.execute("c1", "scada-demo", 50).is_err(),
+        "a failed selection is not executed after the unblock"
     );
-    assert!(!h.dispatches.try_recv().expect("execute dispatched").select);
+    assert!(h.dispatches.try_recv().is_err(), "nothing is executed");
     h.finish();
+}
+
+#[test]
+fn a_selection_executed_before_a_block_is_not_failed_by_it() {
+    let mut h = harness(owned());
+    h.dispatcher
+        .submit(&request("c1", true), 10)
+        .expect("submits");
+    h.dispatches.try_recv().expect("select dispatched");
+    h.dispatcher
+        .update(&answer("c1", pb::CommandStatus::Confirmed), 20)
+        .expect("updates");
+    h.dispatcher
+        .execute("c1", "scada-demo", 30)
+        .expect("executes");
+    h.dispatches.try_recv().expect("execute dispatched");
+    h.dispatcher
+        .update(&answer("c1", pb::CommandStatus::Confirmed), 40)
+        .expect("updates");
+    h.dispatcher
+        .update(&answer("c1", pb::CommandStatus::Terminated), 50)
+        .expect("updates");
+
+    assert_eq!(h.dispatcher.block(60).expect("blocks"), Vec::<State>::new());
+    h.finish();
+}
+
+#[test]
+fn a_command_that_does_not_cite_the_active_revision_is_refused_and_never_dispatched() {
+    let mut h = harness(owned());
+    let mut stale = request("c1", false);
+    stale.expected_revision = "r0".into();
+    assert_eq!(
+        h.dispatcher.submit(&stale, 10).expect("submits"),
+        State::RejectedInvalid
+    );
+    let mut unbound = request("c2", false);
+    unbound.expected_revision = String::new();
+    assert_eq!(
+        h.dispatcher.submit(&unbound, 20).expect("submits"),
+        State::RejectedInvalid
+    );
+    assert!(h.dispatches.try_recv().is_err(), "nothing is sent");
+    h.finish();
+}
+
+#[test]
+fn a_partition_without_an_active_revision_refuses_every_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (client, writer) = CommandWriter::spawn(dir.path().join("critical.db")).expect("spawns");
+    let (to_adapter, mut queued) = channel(8);
+    let route = CommandRoute::new();
+    route.attach(to_adapter);
+    let mut dispatcher = Dispatcher::new(client, acl(), owned(), route);
+    assert_eq!(
+        dispatcher
+            .submit(&request("c1", false), 10)
+            .expect("submits"),
+        State::RejectedInvalid
+    );
+    assert!(queued.try_recv().is_err());
+    drop(dispatcher);
+    writer.join();
 }

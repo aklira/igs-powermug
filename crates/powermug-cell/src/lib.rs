@@ -112,17 +112,24 @@ impl Cell {
             powermug_command::CommandWriter::spawn(&config.critical_db)?;
         let audit = commands.clone();
         // Each session's dispatcher has the empty ACL and no owner: until the configuration
-        // grants a command and the partition has an owner, every command is refused.
+        // grants a command and the partition has an owner, every command is refused. Its
+        // commands must cite the partition's active revision, read from the critical store.
         let mut commands_by_session = std::collections::BTreeMap::new();
         let acl = config::acl_of(&config.commands);
+        let mut active_of_session = std::collections::BTreeMap::new();
+        for instance in adapters::instances(config)? {
+            let site = &config.lanes[instance.lane].site;
+            active_of_session.insert(instance.session, critical.active(site)?);
+        }
         for instance in adapters::instances(config)? {
             let route = commands::CommandRoute::new();
-            let dispatcher = commands::Dispatcher::new(
+            let mut dispatcher = commands::Dispatcher::new(
                 commands.clone(),
                 acl.clone(),
                 powermug_command::ownership::Ownership::new(),
                 route.clone(),
             );
+            dispatcher.set_active_revision(active_of_session.remove(&instance.session).flatten());
             commands_by_session.insert(
                 instance.session,
                 adapters::CommandLink {

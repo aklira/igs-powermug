@@ -105,6 +105,11 @@ pub struct Dispatcher {
     known: BTreeMap<String, Known>,
     open: BTreeMap<String, Open>,
     blocked: bool,
+    /// The revision the partition is active at: a command must cite it (SPECIFICATIONS 9, the
+    /// content identifier). `None` when the partition has no active revision: nothing is accepted.
+    active_revision: Option<String>,
+    /// The selections confirmed and not yet executed: a critical change fails them.
+    awaiting: std::collections::BTreeSet<String>,
 }
 
 impl Dispatcher {
@@ -125,13 +130,23 @@ impl Dispatcher {
             known: BTreeMap::new(),
             open: BTreeMap::new(),
             blocked: false,
+            active_revision: None,
+            awaiting: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// Sets the revision the commands of this session must cite: the partition's active one, or
+    /// `None` when there is none.
+    pub fn set_active_revision(&mut self, revision: Option<String>) {
+        self.active_revision = revision;
     }
 
     /// Blocks the commands of this session for a critical change (FUN-CFG-007, FUN-CMD-011):
     /// no new command is accepted and no selected command is executed until
     /// [`Dispatcher::unblock`]. The emissions still open are classified `IN_DOUBT`, since
-    /// the adapter may or may not have sent them; none is replayed. Returns their states.
+    /// the adapter may or may not have sent them; none is replayed. A confirmed selection is
+    /// `FAILED`: it cannot be attributed to the new revision, and it is never executed. Returns
+    /// the states of the commands the block moved.
     ///
     /// # Errors
     ///
@@ -144,6 +159,14 @@ impl Dispatcher {
             states.push(emission.finish(
                 Outcome::Unknown("blocked for a critical change before activation".into()),
                 now_ns,
+            )?);
+        }
+        for command_id in std::mem::take(&mut self.awaiting) {
+            states.push(self.journal.move_to(
+                &command_id,
+                State::Failed,
+                now_ns,
+                "blocked by a critical change before activation",
             )?);
         }
         Ok(states)
@@ -190,6 +213,14 @@ impl Dispatcher {
                 State::RejectedUnavailable,
                 now_ns,
                 "a critical change is being activated",
+            );
+        }
+        if self.active_revision.as_deref() != Some(request.expected_revision.as_str()) {
+            return self.journal.move_to(
+                &request.command_id,
+                State::RejectedInvalid,
+                now_ns,
+                "the command does not cite the active revision",
             );
         }
 
@@ -296,7 +327,9 @@ impl Dispatcher {
         if self.blocked {
             return Err(CommandError::Blocked(command_id.to_owned()));
         }
-        self.emit(command_id, State::ExecuteSent, false, now_ns)
+        let state = self.emit(command_id, State::ExecuteSent, false, now_ns)?;
+        self.awaiting.remove(command_id);
+        Ok(state)
     }
 
     /// Opens the emission of `command_id` toward `to`, and sends the dispatch. The state
@@ -376,6 +409,9 @@ impl Dispatcher {
                 } else {
                     State::ExecuteConfirmed
                 };
+                if select {
+                    self.awaiting.insert(id.clone());
+                }
                 self.journal.move_to(&id, next, now_ns, "")?
             }
             pb::CommandStatus::Refused => {

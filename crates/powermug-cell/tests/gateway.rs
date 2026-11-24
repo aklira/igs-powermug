@@ -71,7 +71,7 @@ fn command(identity: &str, point: &str, command_id: &str) -> CommandRequest {
         operation: "direct_execute".into(),
         on: true,
         expires_ns: i64::MAX,
-        expected_revision: String::new(),
+        expected_revision: "r1".into(),
     }
 }
 
@@ -87,12 +87,10 @@ fn the_gateway_routes_a_command_through_the_rule_the_owner_and_the_stream() {
     let (to_adapter, _queued) = channel(8);
     route.attach(to_adapter);
     route.detach();
-    let dispatcher = Arc::new(Mutex::new(Dispatcher::new(
-        journal.clone(),
-        acl_of(&config.commands),
-        ownership,
-        route,
-    )));
+    let mut dispatcher =
+        Dispatcher::new(journal.clone(), acl_of(&config.commands), ownership, route);
+    dispatcher.set_active_revision(Some("r1".into()));
+    let dispatcher = Arc::new(Mutex::new(dispatcher));
     let mut routes = BTreeMap::new();
     routes.insert(
         "S3/TC_101".to_owned(),
