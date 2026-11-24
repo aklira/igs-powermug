@@ -282,3 +282,34 @@ async fn a_live_command_is_emitted_before_its_expiry() {
     assert_eq!(selected, vec![(5, Answer::Confirmed)]);
     assert!(executed.lock().expect("lock").is_empty());
 }
+
+/// A known limit of `igs-iec104` (gap G-6, `docs/reports/igs-iec104-gaps.md`): the station refuses
+/// an execution that has no prior selection, before its handler is called, even when the handler
+/// accepts every command. This test pins that behaviour. If the library changes, it fails, and
+/// the gap and this test are updated together.
+#[tokio::test]
+async fn a_direct_execute_is_refused_by_the_station_before_its_handler_without_a_selection() {
+    let (addr, executed, stop, task) = start_station(false).await;
+    let mut client = controlling(addr).await;
+
+    send(
+        &client,
+        SingleCommand {
+            address: 5,
+            on: true,
+            select: false,
+        },
+    )
+    .await
+    .expect("sent");
+    let received = answers(&mut client, 1).await;
+
+    let _ = stop.send(());
+    let _ = task.await;
+
+    assert_eq!(received.first(), Some(&(5, Answer::Refused)));
+    assert!(
+        executed.lock().expect("lock").is_empty(),
+        "the handler is not reached"
+    );
+}
