@@ -11,7 +11,9 @@
 
 use igs_iec104::client::{Client, ClientError};
 use igs_iec104_codec::asdu::{Asdu, Body, Objects};
-use igs_iec104_codec::elements::{Dco, DoubleCommandState, Nva, Qoc, Qos, Sco, ShortFloat, Sva};
+use igs_iec104_codec::elements::{
+    Dco, DoubleCommandState, Nva, Qoc, Qos, Rco, RegulatingStep, Sco, ShortFloat, Sva,
+};
 use igs_iec104_codec::header::{cause, InformationObjectAddress};
 use thiserror::Error;
 
@@ -66,6 +68,17 @@ pub struct SetPointScaled {
     pub address: u32,
     /// The value.
     pub value: i16,
+    /// Select (`true`) or execute (`false`), for select-before-operate.
+    pub select: bool,
+}
+
+/// A regulating step (raise or lower), to one object of the station (`C_RC_NA_1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegulatingStepCommand {
+    /// The information object address of the command.
+    pub address: u32,
+    /// Higher (`true`) or lower (`false`).
+    pub higher: bool,
     /// Select (`true`) or execute (`false`), for select-before-operate.
     pub select: bool,
 }
@@ -185,6 +198,30 @@ pub async fn send_setpoint_float(
         .map_err(CommandError::from)
 }
 
+/// Sends a regulating step. Like [`send`], it returns once the request is queued.
+///
+/// # Errors
+///
+/// As [`send`].
+pub async fn send_regulating_step(
+    client: &Client,
+    command: RegulatingStepCommand,
+) -> Result<(), CommandError> {
+    let address = InformationObjectAddress::new(command.address)
+        .ok_or(CommandError::Address(command.address))?;
+    let qoc =
+        Qoc::new(Qoc::NO_ADDITIONAL_DEFINITION, command.select).ok_or(CommandError::Qualifier)?;
+    let step = if command.higher {
+        RegulatingStep::Higher
+    } else {
+        RegulatingStep::Lower
+    };
+    client
+        .regulating_step(address, Rco { step, qoc }, None)
+        .await
+        .map_err(CommandError::from)
+}
+
 /// Sends a double command. Like [`send`], it returns once the request is queued.
 ///
 /// # Errors
@@ -231,6 +268,7 @@ pub fn answer(asdu: &Asdu) -> Option<(u32, Answer)> {
     let address = match &asdu.body {
         Body::C_SC_NA_1(objects) => first_address(objects)?,
         Body::C_DC_NA_1(objects) => first_address(objects)?,
+        Body::C_RC_NA_1(objects) => first_address(objects)?,
         Body::C_SE_NA_1(objects) => first_address(objects)?,
         Body::C_SE_NB_1(objects) => first_address(objects)?,
         Body::C_SE_NC_1(objects) => first_address(objects)?,
