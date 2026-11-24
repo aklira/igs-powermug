@@ -1,5 +1,5 @@
 //! The operating mode over the management API (FUN-OPS-006, SPECIFICATIONS 9.3): read, set,
-//! audited, refused for an unknown mode or an unnamed actor.
+//! audited under the client certificate, refused for an unknown mode or another actor.
 
 mod common;
 
@@ -11,7 +11,7 @@ fn body(text: &str) -> Json {
 }
 
 #[tokio::test]
-async fn the_mode_is_read_set_and_refused_when_unknown_or_unattributed() {
+async fn the_mode_is_read_and_set_under_the_certificate_and_other_actors_are_refused() {
     let pki = pki();
     let dir = tempfile::tempdir().expect("temp dir");
     let address = serve(&pki, empty_store(&dir), signing_key(1).verifying_key()).await;
@@ -28,7 +28,7 @@ async fn the_mode_is_read_set_and_refused_when_unknown_or_unattributed() {
         client(),
         "POST",
         "/mode",
-        r#"{"mode": "maintenance", "actor": "ops-jdoe"}"#,
+        r#"{"mode": "maintenance"}"#,
     )
     .await
     .expect("answers");
@@ -47,21 +47,15 @@ async fn the_mode_is_read_set_and_refused_when_unknown_or_unattributed() {
         client(),
         "POST",
         "/mode",
-        r#"{"mode": "maintenance", "actor": "ops-other"}"#,
+        r#"{"mode": "maintenance", "actor": "client"}"#,
     )
     .await
     .expect("answers");
     assert_eq!(body(&text)["changed"], false);
 
-    let (status, text) = request(
-        address,
-        client(),
-        "POST",
-        "/mode",
-        r#"{"mode": "debug", "actor": "ops-jdoe"}"#,
-    )
-    .await
-    .expect("answers");
+    let (status, text) = request(address, client(), "POST", "/mode", r#"{"mode": "debug"}"#)
+        .await
+        .expect("answers");
     assert_eq!(status, 400);
     assert_eq!(body(&text)["error"], "unknown_mode");
 
@@ -70,10 +64,34 @@ async fn the_mode_is_read_set_and_refused_when_unknown_or_unattributed() {
         client(),
         "POST",
         "/mode",
-        r#"{"mode": "shadow", "actor": "  "}"#,
+        r#"{"mode": "shadow", "actor": "ops-jdoe"}"#,
     )
     .await
     .expect("answers");
     assert_eq!(status, 400);
-    assert_eq!(body(&text)["error"], "actor_required");
+    assert_eq!(body(&text)["error"], "actor_mismatch");
+}
+
+#[tokio::test]
+async fn a_mode_change_by_a_certificate_without_a_common_name_is_refused() {
+    let pki = pki_with_client_subject(None);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let address = serve(&pki, empty_store(&dir), signing_key(1).verifying_key()).await;
+
+    let (status, text) = request(
+        address,
+        client_with_certificate(&pki),
+        "POST",
+        "/mode",
+        r#"{"mode": "maintenance"}"#,
+    )
+    .await
+    .expect("answers");
+    assert_eq!(status, 401);
+    assert_eq!(body(&text)["error"], "unidentified_client");
+
+    let (_, text) = request(address, client_with_certificate(&pki), "GET", "/mode", "")
+        .await
+        .expect("answers");
+    assert_eq!(body(&text)["mode"], "normal");
 }
