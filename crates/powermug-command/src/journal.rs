@@ -115,6 +115,8 @@ pub enum CommandError {
     NoOpenIntent(String, &'static str),
     #[error("command {0} was submitted by another identity")]
     OtherIdentity(String),
+    #[error("command {0} waits for a critical change to be activated")]
+    Blocked(String),
     #[error("the journal holds an unknown state {0}")]
     UnknownState(String),
     #[error("the audit chain breaks at record {0}")]

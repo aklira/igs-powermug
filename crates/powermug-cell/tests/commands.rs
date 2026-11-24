@@ -302,3 +302,96 @@ fn an_execution_by_another_identity_is_refused_and_the_selection_stays_confirmed
     );
     h.finish();
 }
+
+#[test]
+fn a_block_classifies_the_unanswered_command_in_doubt_and_refuses_new_ones_until_unblocked() {
+    let mut h = harness(owned());
+    h.dispatcher
+        .submit(&request("c1", false), 10)
+        .expect("submits");
+    h.dispatches.try_recv().expect("dispatched");
+
+    assert_eq!(
+        h.dispatcher.block(20).expect("blocks"),
+        vec![State::InDoubt]
+    );
+    assert!(h.dispatcher.is_blocked());
+    assert_eq!(
+        h.dispatcher
+            .submit(&request("c2", false), 30)
+            .expect("submits"),
+        State::RejectedUnavailable
+    );
+    assert!(
+        h.dispatches.try_recv().is_err(),
+        "nothing is sent while blocked"
+    );
+
+    h.dispatcher.unblock();
+    assert_eq!(
+        h.dispatcher
+            .submit(&request("c3", false), 40)
+            .expect("submits"),
+        State::Ready
+    );
+    h.dispatches
+        .try_recv()
+        .expect("dispatched after the change");
+    h.finish();
+}
+
+#[test]
+fn a_block_leaves_an_answered_command_where_it_is() {
+    let mut h = harness(owned());
+    h.dispatcher
+        .submit(&request("c1", false), 10)
+        .expect("submits");
+    h.dispatches.try_recv().expect("dispatched");
+    h.dispatcher
+        .update(&answer("c1", pb::CommandStatus::Confirmed), 20)
+        .expect("updates");
+    h.dispatcher
+        .update(&answer("c1", pb::CommandStatus::Terminated), 30)
+        .expect("updates");
+
+    assert_eq!(h.dispatcher.block(40).expect("blocks"), Vec::<State>::new());
+    assert_eq!(
+        h.dispatcher
+            .submit(&request("c1", false), 50)
+            .expect("again"),
+        State::SuccessUnverified
+    );
+    h.finish();
+}
+
+#[test]
+fn a_selected_command_is_not_executed_while_blocked_and_is_executed_after_the_unblock() {
+    let mut h = harness(owned());
+    h.dispatcher
+        .submit(&request("c1", true), 10)
+        .expect("submits");
+    h.dispatches.try_recv().expect("select dispatched");
+    h.dispatcher
+        .update(&answer("c1", pb::CommandStatus::Confirmed), 20)
+        .expect("updates");
+
+    h.dispatcher.block(30).expect("blocks");
+    assert_eq!(
+        h.dispatcher.execute("c1", "scada-demo", 40),
+        Err(CommandError::Blocked("c1".into()))
+    );
+    assert!(
+        h.dispatches.try_recv().is_err(),
+        "nothing is executed while blocked"
+    );
+
+    h.dispatcher.unblock();
+    assert_eq!(
+        h.dispatcher
+            .execute("c1", "scada-demo", 50)
+            .expect("executes"),
+        State::SelectConfirmed
+    );
+    assert!(!h.dispatches.try_recv().expect("execute dispatched").select);
+    h.finish();
+}

@@ -104,6 +104,7 @@ pub struct Dispatcher {
     route: CommandRoute,
     known: BTreeMap<String, Known>,
     open: BTreeMap<String, Open>,
+    blocked: bool,
 }
 
 impl Dispatcher {
@@ -123,7 +124,40 @@ impl Dispatcher {
             route,
             known: BTreeMap::new(),
             open: BTreeMap::new(),
+            blocked: false,
         }
+    }
+
+    /// Blocks the commands of this session for a critical change (FUN-CFG-007, FUN-CMD-011):
+    /// no new command is accepted and no selected command is executed until
+    /// [`Dispatcher::unblock`]. The emissions still open are classified `IN_DOUBT`, since
+    /// the adapter may or may not have sent them; none is replayed. Returns their states.
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error for the first command it cannot close.
+    pub fn block(&mut self, now_ns: i64) -> Result<Vec<State>, CommandError> {
+        self.blocked = true;
+        let open = std::mem::take(&mut self.open);
+        let mut states = Vec::new();
+        for (_, Open { emission, .. }) in open {
+            states.push(emission.finish(
+                Outcome::Unknown("blocked for a critical change before activation".into()),
+                now_ns,
+            )?);
+        }
+        Ok(states)
+    }
+
+    /// Lifts the block of [`Dispatcher::block`] once the change is active.
+    pub fn unblock(&mut self) {
+        self.blocked = false;
+    }
+
+    /// Whether the commands of this session are blocked for a critical change.
+    #[must_use]
+    pub fn is_blocked(&self) -> bool {
+        self.blocked
     }
 
     /// Submits a command: journals it, authorizes it, admits it under the partition's owner,
@@ -149,6 +183,14 @@ impl Dispatcher {
         };
         if let Submission::Existing(state) = self.journal.submit(recorded, now_ns)? {
             return Ok(state);
+        }
+        if self.blocked {
+            return self.journal.move_to(
+                &request.command_id,
+                State::RejectedUnavailable,
+                now_ns,
+                "a critical change is being activated",
+            );
         }
 
         let mode = self.journal.mode()?;
@@ -250,6 +292,9 @@ impl Dispatcher {
             .ok_or_else(|| CommandError::UnknownCommand(command_id.to_owned()))?;
         if known.identity != identity {
             return Err(CommandError::OtherIdentity(command_id.to_owned()));
+        }
+        if self.blocked {
+            return Err(CommandError::Blocked(command_id.to_owned()));
         }
         self.emit(command_id, State::ExecuteSent, false, now_ns)
     }
@@ -465,9 +510,8 @@ impl powermug_mgmt::CommandGateway for Gateway {
                 CommandError::IllegalTransition { .. }
                 | CommandError::NoOpenIntent(..)
                 | CommandError::IntentOpen(_)
-                | CommandError::OtherIdentity(_) => {
-                    powermug_mgmt::GatewayError::Refused(err.to_string())
-                }
+                | CommandError::OtherIdentity(_)
+                | CommandError::Blocked(_) => powermug_mgmt::GatewayError::Refused(err.to_string()),
                 other => powermug_mgmt::GatewayError::Journal(other.to_string()),
             })
     }
