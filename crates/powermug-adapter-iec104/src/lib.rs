@@ -6,6 +6,7 @@
 
 pub mod command;
 pub mod convert;
+pub mod dispatch;
 pub mod mapping;
 pub mod run;
 pub mod serve;

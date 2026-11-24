@@ -255,10 +255,20 @@ pub async fn send_before_expiry(
     expires_ns: i64,
     now_ns: i64,
 ) -> Result<(), CommandError> {
+    check_live(expires_ns, now_ns)?;
+    send(client, command).await
+}
+
+/// Refuses a command whose expiry has passed (PM-CMD-004).
+///
+/// # Errors
+///
+/// Returns [`CommandError::Expired`] when `expires_ns` is not after `now_ns`.
+pub fn check_live(expires_ns: i64, now_ns: i64) -> Result<(), CommandError> {
     if expires_ns <= now_ns {
         return Err(CommandError::Expired { expires_ns, now_ns });
     }
-    send(client, command).await
+    Ok(())
 }
 
 /// The answer of the station to a single or double command, with the address it concerns, if
