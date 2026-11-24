@@ -117,6 +117,16 @@ fn the_gateway_routes_a_command_through_the_rule_the_owner_and_the_stream() {
         Err(GatewayError::UnknownPoint(_))
     ));
 
+    // A command that was failed cannot be executed; an unknown one is not known.
+    assert!(matches!(
+        gateway.execute("g1", "S3/TC_101", 10),
+        Err(GatewayError::Refused(_))
+    ));
+    assert!(matches!(
+        gateway.execute("zz", "S3/TC_101", 10),
+        Err(GatewayError::UnknownCommand(_))
+    ));
+
     drop(gateway);
     drop(dispatcher);
     drop(journal);

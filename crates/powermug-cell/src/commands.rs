@@ -421,4 +421,31 @@ impl powermug_mgmt::CommandGateway for Gateway {
             .submit(&dispatch, now_ns)
             .map_err(|err| powermug_mgmt::GatewayError::Journal(err.to_string()))
     }
+
+    fn execute(
+        &self,
+        command_id: &str,
+        point: &str,
+        now_ns: i64,
+    ) -> Result<State, powermug_mgmt::GatewayError> {
+        let route = self
+            .routes
+            .get(point)
+            .ok_or_else(|| powermug_mgmt::GatewayError::UnknownPoint(point.to_owned()))?;
+        let mut dispatcher = route
+            .dispatcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        dispatcher
+            .execute(command_id, now_ns)
+            .map_err(|err| match err {
+                CommandError::UnknownCommand(id) => powermug_mgmt::GatewayError::UnknownCommand(id),
+                CommandError::IllegalTransition { .. }
+                | CommandError::NoOpenIntent(..)
+                | CommandError::IntentOpen(_) => {
+                    powermug_mgmt::GatewayError::Refused(err.to_string())
+                }
+                other => powermug_mgmt::GatewayError::Journal(other.to_string()),
+            })
+    }
 }

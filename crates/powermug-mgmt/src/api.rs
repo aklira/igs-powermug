@@ -90,6 +90,7 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/revisions/{id}", get(revision))
         .route("/mode", get(mode_get).post(mode_set))
         .route("/commands", post(command_submit))
+        .route("/commands/{id}/execute", post(command_execute))
         .with_state(api)
 }
 
@@ -476,6 +477,16 @@ impl From<GatewayError> for ApiError {
                 "journal_error",
                 format!("the command journal could not record the command: {message}"),
             ),
+            GatewayError::UnknownCommand(command_id) => Self::new(
+                StatusCode::NOT_FOUND,
+                "unknown_command",
+                format!("no command {command_id} is known to this cell"),
+            ),
+            GatewayError::Refused(reason) => Self::new(
+                StatusCode::CONFLICT,
+                "not_executable",
+                format!("the command cannot be executed now: {reason}"),
+            ),
         }
     }
 }
@@ -551,4 +562,31 @@ fn now_ns() -> i64 {
             .map_or(0, |elapsed| elapsed.as_nanos()),
     )
     .unwrap_or(i64::MAX)
+}
+
+/// The body of an execution: the point the selected command is for, which routes it.
+#[derive(Debug, Deserialize)]
+struct ExecuteBody {
+    point: String,
+}
+
+/// Executes a command that was selected and confirmed (SPECIFICATIONS 9.1, [GW] 11.3): the
+/// execution is sent, and its state moves on with the adapter's answers.
+async fn command_execute(
+    State(api): State<Arc<Api>>,
+    Path(command_id): Path<String>,
+    Json(body): Json<ExecuteBody>,
+) -> Result<Json<Value>, ApiError> {
+    let Some(gateway) = api.gateway.as_ref() else {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_command_path",
+            "this cell serves no commands",
+        ));
+    };
+    let state = gateway.execute(&command_id, &body.point, now_ns())?;
+    Ok(Json(json!({
+        "command_id": command_id,
+        "state": state.code(),
+    })))
 }

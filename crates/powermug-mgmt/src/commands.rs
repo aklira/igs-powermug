@@ -28,6 +28,10 @@ pub enum GatewayError {
     UnknownPoint(String),
     /// The command journal failed.
     Journal(String),
+    /// No command of that identifier is known to the cell.
+    UnknownCommand(String),
+    /// The command cannot take that step now (for example, it is not selected and confirmed).
+    Refused(String),
 }
 
 /// The cell's side of the North entry point.
@@ -39,4 +43,13 @@ pub trait CommandGateway: Send + Sync {
     /// Returns [`GatewayError::UnknownPoint`] for a point the cell does not route, and
     /// [`GatewayError::Journal`] when the journal fails.
     fn submit(&self, request: &CommandRequest, now_ns: i64) -> Result<State, GatewayError>;
+
+    /// Executes a command selected earlier, once its selection is confirmed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GatewayError::UnknownPoint`] for a point the cell does not route,
+    /// [`GatewayError::UnknownCommand`] for an unknown command, and
+    /// [`GatewayError::Refused`] when the command cannot be executed now.
+    fn execute(&self, command_id: &str, point: &str, now_ns: i64) -> Result<State, GatewayError>;
 }

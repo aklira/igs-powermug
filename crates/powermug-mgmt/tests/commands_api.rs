@@ -26,6 +26,23 @@ impl CommandGateway for Recorder {
             Err(GatewayError::UnknownPoint(request.point.clone()))
         }
     }
+
+    fn execute(&self, command_id: &str, point: &str, _now_ns: i64) -> Result<State, GatewayError> {
+        if point != "S3/TC_101" {
+            return Err(GatewayError::UnknownPoint(point.to_owned()));
+        }
+        match command_id {
+            "c1" => Ok(State::ExecuteSent),
+            "refused" => Err(GatewayError::Refused("the command is not selected".into())),
+            other => Err(GatewayError::UnknownCommand(other.to_owned())),
+        }
+    }
+}
+
+impl Recorder {
+    fn executed(&self) -> usize {
+        self.received.lock().expect("lock").len()
+    }
 }
 
 fn body(text: &str) -> Json {
@@ -137,4 +154,58 @@ async fn a_cell_without_a_gateway_serves_no_commands() {
     .expect("answers");
     assert_eq!(status, 503);
     assert_eq!(body(&text)["error"], "no_command_path");
+}
+
+#[tokio::test]
+async fn a_selected_command_is_executed_through_the_gateway_and_refusals_are_answered() {
+    let pki = pki();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gateway = Arc::new(Recorder::default());
+    let address = serve_with_gateway(
+        &pki,
+        empty_store(&dir),
+        signing_key(1).verifying_key(),
+        gateway.clone(),
+    )
+    .await;
+    let client = || client_with_certificate(&pki);
+
+    let (status, text) = request(
+        address,
+        client(),
+        "POST",
+        "/commands/c1/execute",
+        r#"{"point": "S3/TC_101"}"#,
+    )
+    .await
+    .expect("answers");
+    assert_eq!(status, 200);
+    assert_eq!(body(&text)["state"], "EXECUTE_SENT");
+
+    let (status, text) = request(
+        address,
+        client(),
+        "POST",
+        "/commands/refused/execute",
+        r#"{"point": "S3/TC_101"}"#,
+    )
+    .await
+    .expect("answers");
+    assert_eq!(status, 409);
+    assert_eq!(body(&text)["error"], "not_executable");
+
+    let (status, text) = request(
+        address,
+        client(),
+        "POST",
+        "/commands/c9/execute",
+        r#"{"point": "S3/TC_101"}"#,
+    )
+    .await
+    .expect("answers");
+    assert_eq!(status, 404);
+    assert_eq!(body(&text)["error"], "unknown_command");
+
+    // The recorder counts submissions only: no submission was made here.
+    assert_eq!(gateway.executed(), 0);
 }
