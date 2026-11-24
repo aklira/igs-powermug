@@ -8,13 +8,14 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::commands::{CommandGateway, CommandRequest, GatewayError};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use ed25519_dalek::VerifyingKey;
-use powermug_command::{CommandClient, CommandError, Mode};
+use powermug_command::{CommandClient, CommandError, Granularity, Mode};
 use powermug_core::IndicatorSource;
 use powermug_revision::canonical::canonical_bytes;
 use powermug_revision::partition::{
@@ -33,6 +34,7 @@ pub struct Api {
     trusted_key: VerifyingKey,
     indicators: Arc<dyn IndicatorSource>,
     commands: CommandClient,
+    gateway: Option<Arc<dyn CommandGateway>>,
 }
 
 impl Api {
@@ -52,7 +54,15 @@ impl Api {
             trusted_key,
             indicators,
             commands,
+            gateway: None,
         }
+    }
+
+    /// Gives the API the cell's command gateway: without it, `POST /commands` is unavailable.
+    #[must_use]
+    pub fn with_commands(mut self, gateway: Arc<dyn CommandGateway>) -> Self {
+        self.gateway = Some(gateway);
+        self
     }
 
     fn store(&self) -> std::sync::MutexGuard<'_, CriticalStore> {
@@ -79,6 +89,7 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/revisions/rollback", post(rollback))
         .route("/revisions/{id}", get(revision))
         .route("/mode", get(mode_get).post(mode_set))
+        .route("/commands", post(command_submit))
         .with_state(api)
 }
 
@@ -450,4 +461,94 @@ async fn mode_set(
     .unwrap_or(i64::MAX);
     let changed = api.commands.set_mode(mode, &request.actor, at_ns)?;
     Ok(Json(json!({ "mode": mode.code(), "changed": changed })))
+}
+
+impl From<GatewayError> for ApiError {
+    fn from(error: GatewayError) -> Self {
+        match error {
+            GatewayError::UnknownPoint(point) => Self::new(
+                StatusCode::NOT_FOUND,
+                "unknown_point",
+                format!("{point} is not a commandable point of this cell"),
+            ),
+            GatewayError::Journal(message) => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "journal_error",
+                format!("the command journal could not record the command: {message}"),
+            ),
+        }
+    }
+}
+
+/// The body of a command: its identity, its point and operation, its value and its expiry.
+#[derive(Debug, Deserialize)]
+struct CommandBody {
+    command_id: String,
+    point: String,
+    operation: String,
+    value: bool,
+    expires_ns: Option<i64>,
+    expected_revision: Option<String>,
+}
+
+/// How long a command lives when the request does not say (30 s, H).
+const DEFAULT_LIFETIME_NS: i64 = 30_000_000_000;
+
+/// Hands a command to the cell (SPECIFICATIONS 9, [GW] 11.1). The answer is the state the cell
+/// records after its first steps: an authorized command is dispatched and its state moves on
+/// with the adapter's answers.
+async fn command_submit(
+    State(api): State<Arc<Api>>,
+    Json(body): Json<CommandBody>,
+) -> Result<Json<Value>, ApiError> {
+    let Some(gateway) = api.gateway.as_ref() else {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_command_path",
+            "this cell serves no commands",
+        ));
+    };
+    if body.command_id.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "command_id_required",
+            "a command names its command_id, the idempotency key",
+        ));
+    }
+    if !matches!(body.operation.as_str(), "direct_execute" | "select") {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "unknown_operation",
+            format!(
+                "{} is not an operation: direct_execute or select",
+                body.operation
+            ),
+        ));
+    }
+    let now = now_ns();
+    // The certificate's subject is not read yet: the issuer is the mTLS client, per client (GW 11.6).
+    let request = CommandRequest {
+        command_id: body.command_id.clone(),
+        identity: "mtls-client".into(),
+        identity_level: Granularity::Client,
+        point: body.point,
+        operation: body.operation,
+        on: body.value,
+        expires_ns: body.expires_ns.unwrap_or(now + DEFAULT_LIFETIME_NS),
+        expected_revision: body.expected_revision.unwrap_or_default(),
+    };
+    let state = gateway.submit(&request, now)?;
+    Ok(Json(json!({
+        "command_id": body.command_id,
+        "state": state.code(),
+    })))
+}
+
+fn now_ns() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos()),
+    )
+    .unwrap_or(i64::MAX)
 }

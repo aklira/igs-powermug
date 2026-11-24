@@ -110,11 +110,12 @@ impl Cell {
         // Each session's dispatcher has the empty ACL and no owner: until the configuration
         // grants a command and the partition has an owner, every command is refused.
         let mut commands_by_session = std::collections::BTreeMap::new();
+        let acl = config::acl_of(&config.commands);
         for instance in adapters::instances(config)? {
             let route = commands::CommandRoute::new();
             let dispatcher = commands::Dispatcher::new(
                 commands.clone(),
-                powermug_command::authorization::Acl::new(),
+                acl.clone(),
                 powermug_command::ownership::Ownership::new(),
                 route.clone(),
             );
@@ -126,13 +127,26 @@ impl Cell {
                 },
             );
         }
-        let api = Arc::new(Api::new(
-            critical,
-            powermug_v1(),
-            trusted_key,
-            indicators,
-            commands,
-        ));
+        // A commandable point is routed to the dispatcher of its session.
+        let mut routes = std::collections::BTreeMap::new();
+        for lane in &config.lanes {
+            for point in &lane.points {
+                if let Some(link) = commands_by_session.get(&point.session) {
+                    routes.insert(
+                        point.id.clone(),
+                        commands::Route {
+                            dispatcher: Arc::clone(&link.dispatcher),
+                            partition: lane.site.clone(),
+                            address: point.address,
+                        },
+                    );
+                }
+            }
+        }
+        let api = Arc::new(
+            Api::new(critical, powermug_v1(), trusted_key, indicators, commands)
+                .with_commands(Arc::new(commands::Gateway::new(routes))),
+        );
         Ok(Self {
             api,
             lanes,

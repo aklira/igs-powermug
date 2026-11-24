@@ -365,3 +365,60 @@ pub fn channel(
 ) {
     mpsc::channel(capacity)
 }
+
+/// Where a commandable point goes: the dispatcher of its session, the partition it belongs to,
+/// and its object address on the station.
+#[derive(Clone, Debug)]
+pub struct Route {
+    pub dispatcher: Arc<Mutex<Dispatcher>>,
+    pub partition: String,
+    pub address: u32,
+}
+
+/// The North entry point of the cell: it hands each command to the dispatcher of its point.
+#[derive(Debug)]
+pub struct Gateway {
+    routes: std::collections::BTreeMap<String, Route>,
+}
+
+impl Gateway {
+    /// A gateway over the routes of the commandable points.
+    #[must_use]
+    pub fn new(routes: std::collections::BTreeMap<String, Route>) -> Self {
+        Self { routes }
+    }
+}
+
+impl powermug_mgmt::CommandGateway for Gateway {
+    fn submit(
+        &self,
+        request: &powermug_mgmt::CommandRequest,
+        now_ns: i64,
+    ) -> Result<State, powermug_mgmt::GatewayError> {
+        let route = self
+            .routes
+            .get(&request.point)
+            .ok_or_else(|| powermug_mgmt::GatewayError::UnknownPoint(request.point.clone()))?;
+        let dispatch = Request {
+            command_id: request.command_id.clone(),
+            identity: request.identity.clone(),
+            identity_level: request.identity_level,
+            point: request.point.clone(),
+            operation: request.operation.clone(),
+            partition: route.partition.clone(),
+            address: route.address,
+            kind: pb::CommandKind::Single,
+            on: request.on,
+            select: request.operation == "select",
+            expires_ns: request.expires_ns,
+            expected_revision: request.expected_revision.clone(),
+        };
+        let mut dispatcher = route
+            .dispatcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        dispatcher
+            .submit(&dispatch, now_ns)
+            .map_err(|err| powermug_mgmt::GatewayError::Journal(err.to_string()))
+    }
+}

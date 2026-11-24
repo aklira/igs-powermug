@@ -97,6 +97,37 @@ pub async fn serve(pki: &Pki, store: CriticalStore, trusted_key: VerifyingKey) -
     serve_with(pki, store, trusted_key, std::sync::Arc::new(NoIndicators)).await
 }
 
+/// As [`serve`], with the cell's command gateway.
+pub async fn serve_with_gateway(
+    pki: &Pki,
+    store: CriticalStore,
+    trusted_key: VerifyingKey,
+    gateway: std::sync::Arc<dyn powermug_mgmt::CommandGateway>,
+) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let address = listener.local_addr().expect("address");
+    let config = server_config(
+        pki.server_pem.0.as_bytes(),
+        pki.server_pem.1.as_bytes(),
+        pki.client_ca_pem.as_bytes(),
+    )
+    .expect("server TLS");
+    let api = Arc::new(
+        Api::new(
+            store,
+            powermug_v1(),
+            trusted_key,
+            std::sync::Arc::new(NoIndicators),
+            command_client(),
+        )
+        .with_commands(gateway),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(TlsListener::new(listener, config), router(api)).await;
+    });
+    address
+}
+
 /// A command journal for the API, in a directory kept for the test run.
 pub fn command_client() -> powermug_command::CommandClient {
     let dir = tempfile::tempdir().expect("temp dir").keep();
