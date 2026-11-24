@@ -215,7 +215,7 @@ async fn a_dispatch_is_emitted_to_the_station_and_its_outcome_reaches_the_core()
     }
     let (adapter_stop, adapter_stopped) = oneshot::channel::<()>();
     let adapter = tokio::spawn(async move {
-        dispatch::serve(channel, &mut controlling, 3, async {
+        dispatch::serve_single(channel, &mut controlling, 3, 1, async {
             let _ = adapter_stopped.await;
         })
         .await
@@ -271,6 +271,6 @@ async fn a_dispatch_is_emitted_to_the_station_and_its_outcome_reaches_the_core()
     let _ = station_stop.send(());
     let _ = station_task.await;
 
-    assert_eq!(report.dispatched, 4);
+    assert_eq!(report, 4);
     assert_eq!(*executed.lock().expect("lock"), vec![(5, true)]);
 }

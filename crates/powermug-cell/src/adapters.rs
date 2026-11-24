@@ -130,6 +130,8 @@ pub fn instances(config: &CellConfig) -> Result<Vec<Instance>, ConfigError> {
                 directory: directory.clone(),
                 lane: index,
                 settings: Settings {
+                    // Not yet taken from the partition's ownership: see PROGRESS.md.
+                    owner_epoch: 0,
                     stations: item.stations.clone(),
                     common_address: item.common_address,
                     core_socket: directory.join("core.sock"),

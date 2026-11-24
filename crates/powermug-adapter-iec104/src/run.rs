@@ -23,9 +23,11 @@ use powermug_contract::client::{self, ClientError, EventStream};
 use powermug_contract::proto::v1 as pb;
 use powermug_pivot::proto::v1 as pivot;
 use thiserror::Error;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::convert::{asdu as convert_asdu, Context, ConvertError};
+use crate::dispatch::{send_group, CommandPort};
 use crate::mapping::Mapping;
 
 /// Settings of one adapter instance.
@@ -49,6 +51,9 @@ pub struct Options {
     pub artifact_sha256: String,
     /// Credits of the stream: events in flight before acknowledgements.
     pub window_events: u32,
+    /// The owner epoch the session was activated at (PM-CMD-005): a dispatch of another epoch
+    /// is not sent.
+    pub owner_epoch: u64,
 }
 
 /// What the loop did, returned when it stops.
@@ -94,7 +99,14 @@ pub fn capabilities(options: &Options) -> pb::Capabilities {
             role: pb::Role::Client as i32,
             functions: vec!["general_interrogation".into()],
         }],
-        command_variants: Vec::new(),
+        command_variants: vec![
+            "single".into(),
+            "double".into(),
+            "regulating_step".into(),
+            "set_point_float".into(),
+            "set_point_normalized".into(),
+            "set_point_scaled".into(),
+        ],
         limits: Some(pb::Limits {
             max_batch_events: 1_024,
             max_batch_bytes: 1 << 20,
@@ -132,12 +144,7 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
     client::describe_capabilities(channel.clone(), capabilities(&options)).await?;
     let mut stream = EventStream::open(channel.clone(), options.window_events).await?;
 
-    let endpoints = options
-        .stations
-        .iter()
-        .map(|address| ClientConfig::new(*address, CommonAddress::new(options.common_address)))
-        .collect();
-    let mut group = RedundantClient::connect(endpoints).map_err(RunError::Group)?;
+    let mut group = connect_group(&options)?;
 
     let mut report = Report::default();
     // Health every second (§6.3). A missed tick is skipped, not made up for.
@@ -150,6 +157,7 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
     let mut up_reported = false;
     let mut epoch: u64 = 0;
     let mut sequence: u64 = 0;
+    let (mut dispatches, command_updates, mut port) = open_commands(&channel, &options).await;
     tokio::pin!(stop);
 
     loop {
@@ -159,6 +167,14 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
                 health_sequence += 1;
                 health_report(&channel, &options, health_sequence, up_reported, &mut report).await;
             }
+            dispatch = next_dispatch(&mut dispatches) => match dispatch {
+                Ok(Some(dispatch)) => {
+                    if let Some(outcome) = dispatch_one(&group, &mut port, started.is_some(), &dispatch).await {
+                        report_command(command_updates.as_ref(), outcome).await;
+                    }
+                }
+                Ok(None) | Err(_) => dispatches = None,
+            },
             Some(ack) = stream.next_ack() => {
                 if ack.status == pb::AckStatus::Rejected as i32 {
                     report.rejected += 1;
@@ -189,6 +205,10 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
                             }
                         }
                         Event::Delivery(Delivery::Asdu(asdu)) => {
+                            if let Some(outcome) = port.answer(&asdu) {
+                                report_command(command_updates.as_ref(), outcome).await;
+                                continue;
+                            }
                             let context = Context {
                                 site_id: &options.site_id,
                                 mapping: &options.mapping,
@@ -266,4 +286,74 @@ async fn session_change(
     {
         report.refused_reports += 1;
     }
+}
+
+/// The next dispatch of the core's command stream; pending for ever when there is none.
+async fn next_dispatch(
+    stream: &mut Option<tonic::Streaming<pb::CommandDispatch>>,
+) -> Result<Option<pb::CommandDispatch>, tonic::Status> {
+    match stream {
+        Some(stream) => stream.message().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Reports one command outcome to the core, when the stream is open.
+async fn report_command(
+    updates: Option<&mpsc::Sender<pb::CommandUpdate>>,
+    outcome: pb::CommandUpdate,
+) {
+    if let Some(updates) = updates {
+        let _ = updates.send(outcome).await;
+    }
+}
+
+/// Decides one dispatch of the core: it is sent through the group when a connection is started,
+/// and reported not sent otherwise, since nothing could be sent (the library would drop it).
+async fn dispatch_one(
+    group: &RedundantClient,
+    port: &mut CommandPort,
+    started: bool,
+    dispatch: &pb::CommandDispatch,
+) -> Option<pb::CommandUpdate> {
+    if started {
+        send_group(group, port, dispatch).await
+    } else {
+        Some(crate::dispatch::update(
+            &dispatch.command_id,
+            pb::CommandStatus::NotSent,
+            "no connection of the group is started",
+        ))
+    }
+}
+
+/// Opens the command stream of the session, when the core serves commands (§6.1). A core that
+/// refuses it serves none: the adapter then runs without commands.
+async fn open_commands(
+    channel: &tonic::transport::Channel,
+    options: &Options,
+) -> (
+    Option<tonic::Streaming<pb::CommandDispatch>>,
+    Option<mpsc::Sender<pb::CommandUpdate>>,
+    CommandPort,
+) {
+    let (dispatches, updates) = match client::execute_commands(channel.clone()).await {
+        Ok((updates, dispatches)) => (Some(dispatches), Some(updates)),
+        Err(_) => (None, None),
+    };
+    (
+        dispatches,
+        updates,
+        CommandPort::new(options.owner_epoch, options.common_address),
+    )
+}
+
+/// The redundancy group of the stations, in the order of the options.
+fn connect_group(options: &Options) -> Result<RedundantClient, RunError> {
+    let endpoints = options
+        .stations
+        .iter()
+        .map(|address| ClientConfig::new(*address, CommonAddress::new(options.common_address)))
+        .collect();
+    RedundantClient::connect(endpoints).map_err(RunError::Group)
 }

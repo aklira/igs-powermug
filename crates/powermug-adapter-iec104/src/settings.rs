@@ -36,6 +36,9 @@ pub struct Settings {
     pub artifact_sha256: String,
     /// Credits of the stream: events in flight before acknowledgements.
     pub window_events: u32,
+    /// The owner epoch the session was activated at (PM-CMD-005).
+    #[serde(default)]
+    pub owner_epoch: u64,
 }
 
 /// One point of the session: its object address on the station, and its identifier.
@@ -87,6 +90,7 @@ impl Settings {
             mapping,
             artifact_sha256: self.artifact_sha256,
             window_events: self.window_events,
+            owner_epoch: self.owner_epoch,
         })
     }
 }

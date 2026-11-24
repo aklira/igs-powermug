@@ -174,6 +174,7 @@ fn options(station: SocketAddr, socket: std::path::PathBuf) -> Options {
         .expect("distinct"),
         artifact_sha256: "ab".repeat(32),
         window_events: 64,
+        owner_epoch: 0,
     }
 }
 
