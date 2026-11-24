@@ -2,9 +2,25 @@
 
 Implementation status of Powermug, against [specifications/IMPLEMENTATION.md](specifications/IMPLEMENTATION.md). Update this file whenever a task or phase changes state.
 
-- **Last updated:** 2026-11-20
-- **Current phase:** P1 · Foundations, in progress (P0 not formally exited)
+- **Last updated:** 2026-11-24
+- **Current phase:** P3 · Command plane, in progress; P2 kept open (bench and decision 9 pending)
 - **Milestones reached:** none (M1 to M5 are not reached)
+- **Overall progress:** 21 %
+
+| Phase | Progress | Checklist (done / partial / blocked / not started) |
+|---|---|---|
+| P0 · Framing | 58 % | 3 / 1 / 1 / 1 |
+| P1 · Foundations | 67 % | 6 / 4 / 0 / 2 |
+| P2 · IEC 104 telemetry loop | 80 % | 14 / 7 / 0 / 1 |
+| P3 · Command plane | 50 % | 0 / 5 / 0 / 0 |
+| P4 · Store-and-forward, Kafka, MQTT 5, indicators | 0 % | 0 / 0 / 0 / 7 |
+| P5 · Processing N1 and N2, cell scope | 0 % | 0 / 0 / 1 / 7 |
+| P6 · Processing adapters, guards, ownership transfer | 0 % | 0 / 0 / 0 / 7 |
+| P7 · P1 protocols, ARM64, fidelity, PKI | 0 % | 0 / 0 / 1 / 6 |
+| P8 · High availability and concentrator scale | 0 % | 0 / 0 / 0 / 5 |
+| P9 · Industrialisation | 0 % | 0 / 0 / 0 / 6 |
+
+Method: each checklist item counts `[x]` = 1, `[~]` = 0.5, `[ ]` and `[!]` = 0. A phase's progress is the mean over its items. The overall figure is the mean of the phases weighted by their duration (44 weeks in total). The percentages are recomputed from the markers below when a task changes state; they do not measure the acceptance criteria, which are not run yet (no phase is exited).
 
 Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[!]` blocked, with the reason.
 
