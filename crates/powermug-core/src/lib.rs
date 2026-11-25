@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod actions;
 pub mod clock;
 pub mod cycle;
 pub mod decode;
