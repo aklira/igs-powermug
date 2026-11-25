@@ -14,6 +14,7 @@ pub mod image;
 pub mod indicators;
 pub mod lane;
 pub mod ring;
+pub mod saturation;
 pub mod sink;
 pub mod snapshot;
 pub mod supervisor;
