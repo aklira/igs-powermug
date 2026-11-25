@@ -235,6 +235,8 @@ pub struct Lane {
     shed_counts: [u64; 4],
     /// Events refused by the saturation policy, per class, by [`class_slot`].
     refused_counts: [u64; 4],
+    /// The wall-clock time until which class C is shed by order (the local action `shed_class_c`).
+    forced_shed_until: Option<i64>,
 }
 
 /// The slot of a class in the per-class tables of a lane.
@@ -284,6 +286,7 @@ impl Lane {
             thresholds: crate::saturation::Thresholds::default(),
             shed_counts: [0; 4],
             refused_counts: [0; 4],
+            forced_shed_until: None,
         }
     }
 
@@ -452,7 +455,7 @@ impl Lane {
                 return Err(LaneError::UnknownPoint(event.point.0));
             }
         }
-        let shed_c = self.admit(events)?;
+        let shed_c = self.admit(events, times.wall_ns)?;
 
         let expired = self.supervisor.expire(times.monotonic_ns);
         let stale = match self.stale_events(&expired, times.wall_ns) {
@@ -612,6 +615,12 @@ impl Lane {
         self.last_accepted_wall_ns
     }
 
+    /// Sheds class C until `until_wall_ns`, whatever the level (the local action `shed_class_c`,
+    /// bounded by its rate and its duration). A later order replaces an earlier one.
+    pub fn force_shed(&mut self, until_wall_ns: i64) {
+        self.forced_shed_until = Some(until_wall_ns);
+    }
+
     /// Sets the journal quota of a class, in events.
     pub fn set_quota(&mut self, class: EventClass, quota: u64) {
         self.quotas[class_slot(class)] = quota;
@@ -640,8 +649,11 @@ impl Lane {
 
     /// Decides whether a batch is admitted under the saturation policy. Returns whether the class
     /// C events of the batch are shed. A refused batch changes nothing and is counted.
-    fn admit(&mut self, events: &[PointEvent]) -> Result<bool, LaneError> {
-        let mut shed_c = false;
+    fn admit(&mut self, events: &[PointEvent], now_wall_ns: i64) -> Result<bool, LaneError> {
+        // A forced shedding window (the local action `shed_class_c`) sheds class C regardless of the level.
+        let mut shed_c = self
+            .forced_shed_until
+            .is_some_and(|until| now_wall_ns < until);
         let mut classes: Vec<EventClass> = Vec::new();
         for event in events {
             if let Some(spec) = self.table.get(event.point) {

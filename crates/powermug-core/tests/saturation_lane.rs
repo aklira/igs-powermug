@@ -8,6 +8,8 @@ use powermug_pivot::{EventId, PointEvent, PointIndex, Quality, Value};
 use powermug_store::{EventClass, TelemetryLog};
 
 const SEC: u64 = 1_000_000_000;
+/// The wall-clock time of `at(0)`: 1,000 s after the epoch.
+const WALL_EPOCH_NS: i64 = 1_000_000_000_000;
 
 fn table() -> PointTable {
     PointTable::new(
@@ -115,4 +117,34 @@ fn nothing_is_lost_below_the_thresholds() {
     }
     assert_eq!(lane.losses(EventClass::A), (0, 0));
     assert_eq!(lane.losses(EventClass::C), (0, 0));
+}
+
+#[test]
+fn a_forced_shedding_window_sheds_class_c_until_it_ends() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (mut lane, _reader) = open(dir.path());
+    // The order runs for five seconds from the epoch of the test's clock (wall time 1,000 s).
+    lane.force_shed(WALL_EPOCH_NS + 5_000_000_000);
+
+    lane.ingest(&[event(1, 100)], at(1)).expect("admitted");
+    assert_eq!(
+        lane.losses(EventClass::C),
+        (1, 0),
+        "shed while the window lasts"
+    );
+    assert!(lane
+        .take_published()
+        .iter()
+        .all(|e| e.point_id != "S3/TD_002"));
+
+    lane.ingest(&[event(1, 200)], at(6)).expect("admitted");
+    assert_eq!(
+        lane.losses(EventClass::C),
+        (1, 0),
+        "kept once the window has ended"
+    );
+    assert!(lane
+        .take_published()
+        .iter()
+        .any(|e| e.point_id == "S3/TD_002"));
 }
