@@ -50,7 +50,16 @@ impl NorthFeed for LaneFeed {
                 first - 1
             )));
         }
-        Ok(batch.items)
+        // An event read from the journal behind the live ring is a replay (FUN-SAF-003).
+        let replay = batch.replay;
+        Ok(batch
+            .items
+            .into_iter()
+            .map(|(seq, mut envelope)| {
+                envelope.replay = replay;
+                (seq, envelope)
+            })
+            .collect())
     }
 
     fn acknowledge(&mut self, seq: i64) -> Result<(), Refusal> {

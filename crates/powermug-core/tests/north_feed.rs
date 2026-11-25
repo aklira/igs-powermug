@@ -215,18 +215,21 @@ async fn receive_all(
     acks: &tokio::sync::mpsc::Sender<pb::DeliveryAck>,
     batches: &mut tonic::Streaming<pb::DeliveryBatch>,
     total: u64,
-) -> Vec<u64> {
+) -> Vec<pivot::Envelope> {
     let mut received = Vec::new();
     while (received.len() as u64) < total {
         let delivery = next_delivery(batches).await;
-        let ids: Vec<u64> = delivery.events.iter().map(sequence_of).collect();
-        let last = *ids.last().expect("a batch has events");
+        let last = delivery
+            .events
+            .last()
+            .map(sequence_of)
+            .expect("a batch has events");
         assert_eq!(
             delivery.last_seq,
             i64::try_from(last).expect("fits i64"),
             "the batch states the journal position of its last event"
         );
-        received.extend(ids);
+        received.extend(delivery.events);
         acks.send(pb::DeliveryAck {
             sequence: delivery.sequence,
         })
@@ -250,7 +253,12 @@ async fn a_declared_destination_receives_every_event_in_order_and_its_cursor_fol
         .await
         .expect("subscribes");
     let received = receive_all(&acks, &mut batches, 150).await;
-    assert_eq!(received, (1..=150).collect::<Vec<u64>>());
+    let ids: Vec<u64> = received.iter().map(sequence_of).collect();
+    assert_eq!(ids, (1..=150).collect::<Vec<u64>>());
+    assert!(
+        received.iter().all(|envelope| !envelope.replay),
+        "events served from the live ring are live, not replayed"
+    );
     wait_for_cursor(&harness.reader, 150).await;
 
     drop(acks);
@@ -273,7 +281,18 @@ async fn a_destination_behind_the_live_ring_is_replayed_from_the_journal_in_orde
         .await
         .expect("subscribes");
     let received = receive_all(&acks, &mut batches, 5_000).await;
-    assert_eq!(received, (1..=5_000).collect::<Vec<u64>>());
+    let ids: Vec<u64> = received.iter().map(sequence_of).collect();
+    assert_eq!(ids, (1..=5_000).collect::<Vec<u64>>());
+    // Events before the ring are read from the journal, so they are marked as replays; the events
+    // the ring still holds are live.
+    for envelope in &received {
+        let id = sequence_of(envelope);
+        if id <= 904 {
+            assert!(envelope.replay, "event {id} is replayed from the journal");
+        } else if id > 960 {
+            assert!(!envelope.replay, "event {id} is served from the live ring");
+        }
+    }
     wait_for_cursor(&harness.reader, 5_000).await;
 
     drop(acks);

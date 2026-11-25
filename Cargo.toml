@@ -9,6 +9,7 @@ members = [
     "crates/powermug-contract",
     "crates/powermug-store",
     "crates/powermug-adapter-iec104",
+    "crates/powermug-adapter-kafka",
     "crates/powermug-bench",
     "crates/powermug-mgmt",
     "crates/powermug-cell",
