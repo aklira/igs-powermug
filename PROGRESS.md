@@ -106,7 +106,7 @@ Exit: ACC-002, ACC-003, ACC-008 pass in reduced campaigns; MVP S17, S18, S19 pas
 
 - [ ] `kafka-producer` adapter on `rdkafka`, as a separate executable (ADR-18)
 - [ ] `mqtt5-client` adapter (crate to confirm under NFR-MNT-003)
-- [ ] Delivery: live ring, cursors, replay, explicit start point, image buffers
+- [~] Delivery: live ring, cursors, replay, explicit start point, image buffers. Done: the live ring of each lane (`powermug-core/src/ring.rs`, journaled envelopes with their sequence numbers) and the feed of a flux destination (`delivery.rs`): caught up, from the ring; behind it, from the journal, marked `replay`, capped per call. Five tests. Not done: the explicit start point in the feed, the image buffers, the adapters that acknowledge
 - [ ] Classes, quotas, saturation thresholds, separate volumes
 - [ ] Indicators `indicators.v1`, OpenMetrics with bounded series
 - [ ] Local actions and `/actions/execute`
@@ -188,6 +188,7 @@ Exit: ACC-009, ACC-012 pass; first major-release campaign complete.
 
 ## Journal
 
+- **2026-11-25:** P4 slice 1, live ring and replay: each lane keeps its last journaled envelopes with their sequence numbers (`LiveRing`); a flux destination is served from the ring when it is caught up, and from the journal, marked `replay=true` and capped per call, when it is behind. Nothing is lost (a reduced ACC-001: every journaled event reaches the destination, in order). Five tests (`powermug-core/tests/delivery.rs`). Workspace tests, clippy `-D warnings` and fmt green. Not committed.
 - **2026-11-25:** P4 plan prepared (`docs/phases/P4-plan.md`): scope from the checklist, what already exists (cursors, replay, retention, classes, two indicators, the contract), eight slices in order, five decisions for the owner (rdkafka, MQTT crate, gridloop schema order, quota values, bench environment). Not started. No code change.
 - **2026-11-25:** P3 draft of the G-7 report for the owner of `igs-iec104` (`docs/reports/igs-iec104-report-peer-identity.md`), for review; not sent. No code change.
 - **2026-11-25:** P3 MVP S18 blocked by a library gap (G-7): `igs-iec104`'s handler receives each operation without the connection it comes from, so an IEC 104 master cannot be authorized by its identity. Owner's decisions: the identity of an IEC 104 master is its TLS client certificate, with the `openssl` backend of `igs-iec104`. The feature is not enabled yet: nothing uses it, and it adds the native libssl dependency (headers present on this host). Gap G-7 recorded in `docs/reports/igs-iec104-gaps.md`, not raised on the library's tracker (needs approval). No code change in this entry.

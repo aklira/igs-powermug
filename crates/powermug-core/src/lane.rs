@@ -222,6 +222,7 @@ pub struct Lane {
     reported: HashSet<SessionId>,
     last_snapshot_ns: u64,
     published: Vec<pb::Envelope>,
+    live: crate::ring::LiveRing,
     last_accepted_wall_ns: Option<i64>,
 }
 
@@ -249,8 +250,20 @@ impl Lane {
             reported: HashSet::new(),
             last_snapshot_ns: now_ns,
             published: Vec::new(),
+            live: crate::ring::LiveRing::new(crate::ring::DEFAULT_CAPACITY),
             last_accepted_wall_ns: None,
         }
+    }
+
+    /// The live ring of the lane: the last journaled envelopes (see [`crate::ring`]).
+    #[must_use]
+    pub fn live(&self) -> &crate::ring::LiveRing {
+        &self.live
+    }
+
+    /// Sets the capacity of the live ring. The ring starts empty: call it before the lane runs.
+    pub fn set_live_capacity(&mut self, capacity: usize) {
+        self.live = crate::ring::LiveRing::new(capacity);
     }
 
     /// Takes a snapshot of the image at the current journal sequence. Returns
@@ -435,7 +448,7 @@ impl Lane {
                 return Err(err);
             }
         };
-        self.publish(&entries);
+        self.publish(&entries, committed.as_ref());
 
         for entry in &entries {
             if let Journaled::Point { event, origin } = entry {
@@ -507,7 +520,7 @@ impl Lane {
         }
 
         let committed = self.append(&entries)?;
-        self.publish(&entries);
+        self.publish(&entries, committed.as_ref());
         for entry in &entries {
             if let Journaled::Point { event, .. } = entry {
                 self.image.apply(event)?;
@@ -613,21 +626,32 @@ impl Lane {
             .collect()
     }
 
-    /// Keeps the envelopes of the point items of a commit for publication.
-    fn publish(&mut self, entries: &[Journaled]) {
+    /// Keeps the envelopes of the point items of a commit for publication, and the journaled ones
+    /// in the live ring. The journaled items take the sequence numbers of the commit in order;
+    /// class C items are not journaled and take none.
+    fn publish(&mut self, entries: &[Journaled], committed: Option<&Committed>) {
+        let mut next = committed.map(|commit| commit.first_seq);
         for entry in entries {
             let Journaled::Point { event, origin } = entry else {
                 continue;
             };
-            if let Some(spec) = self.table.get(event.point) {
-                self.published.push(envelope(
-                    event,
-                    &spec.site_id,
-                    &spec.point_id,
-                    *origin,
-                    self.table.revision_index(),
-                ));
+            let Some(spec) = self.table.get(event.point) else {
+                continue;
+            };
+            let envelope = envelope(
+                event,
+                &spec.site_id,
+                &spec.point_id,
+                *origin,
+                self.table.revision_index(),
+            );
+            if spec.class != EventClass::C {
+                if let Some(seq) = next {
+                    self.live.push(seq, envelope.clone());
+                    next = Some(seq + 1);
+                }
             }
+            self.published.push(envelope);
         }
     }
 

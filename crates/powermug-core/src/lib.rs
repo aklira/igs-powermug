@@ -9,9 +9,11 @@
 pub mod clock;
 pub mod cycle;
 pub mod decode;
+pub mod delivery;
 pub mod image;
 pub mod indicators;
 pub mod lane;
+pub mod ring;
 pub mod sink;
 pub mod snapshot;
 pub mod supervisor;
