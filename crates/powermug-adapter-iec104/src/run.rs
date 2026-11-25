@@ -196,11 +196,11 @@ pub async fn run(options: Options, stop: impl Future<Output = ()>) -> Result<Rep
                         Event::Connected => report.connections += 1,
                         Event::Disconnected(error) | Event::ConnectFailed(error) => {
                             if started == Some(index) {
+                                report_lost(&mut port, command_updates.as_ref()).await;
                                 started = None;
                                 if up_reported {
                                     up_reported = false;
-                                    let reason = error.to_string();
-                                    session_change(&channel, &options, false, &reason, &mut report).await;
+                                    session_change(&channel, &options, false, &error.to_string(), &mut report).await;
                                 }
                             }
                         }
@@ -324,6 +324,14 @@ async fn dispatch_one(
             pb::CommandStatus::NotSent,
             "no connection of the group is started",
         ))
+    }
+}
+
+/// The link to the station is lost: the commands that left are in doubt, and their answers will
+/// not come (see [`CommandPort::lost`]).
+async fn report_lost(port: &mut CommandPort, updates: Option<&mpsc::Sender<pb::CommandUpdate>>) {
+    for outcome in port.lost() {
+        report_command(updates, outcome).await;
     }
 }
 

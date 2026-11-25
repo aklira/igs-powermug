@@ -180,6 +180,21 @@ impl CommandPort {
         };
         Some(update(&pending.command_id, status, ""))
     }
+
+    /// The link to the station is lost: every command that left and has no answer yet is in
+    /// doubt. The pending commands are forgotten, so that a late answer is never applied to them.
+    pub fn lost(&mut self) -> Vec<pb::CommandUpdate> {
+        self.pending
+            .drain(..)
+            .map(|pending| {
+                update(
+                    &pending.command_id,
+                    pb::CommandStatus::InDoubt,
+                    "the link to the station was lost before its answer",
+                )
+            })
+            .collect()
+    }
 }
 
 /// The command stream could not be opened.

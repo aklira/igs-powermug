@@ -510,3 +510,56 @@ fn ten_thousand_submissions_of_one_command_are_dispatched_once() {
     );
     h.finish();
 }
+
+fn in_doubt(command_id: &str) -> pb::CommandUpdate {
+    pb::CommandUpdate {
+        command_id: command_id.into(),
+        status: pb::CommandStatus::InDoubt as i32,
+        reason: "the link to the station was lost before its answer".into(),
+    }
+}
+
+#[test]
+fn a_link_lost_before_the_answer_puts_the_command_in_doubt_and_never_replays_it() {
+    let mut h = harness(owned());
+    h.dispatcher
+        .submit(&request("c1", false), 10)
+        .expect("submits");
+    h.dispatches.try_recv().expect("dispatched");
+
+    assert_eq!(
+        h.dispatcher.update(&in_doubt("c1"), 20).expect("updates"),
+        Some(State::InDoubt)
+    );
+    assert_eq!(
+        h.dispatcher
+            .submit(&request("c1", false), 30)
+            .expect("again"),
+        State::InDoubt
+    );
+    assert!(h.dispatches.try_recv().is_err(), "nothing is replayed");
+    h.finish();
+}
+
+#[test]
+fn a_link_lost_after_a_confirmed_execution_puts_it_in_doubt() {
+    let mut h = harness(owned());
+    h.dispatcher
+        .submit(&request("c1", false), 10)
+        .expect("submits");
+    h.dispatches.try_recv().expect("dispatched");
+    h.dispatcher
+        .update(&answer("c1", pb::CommandStatus::Confirmed), 20)
+        .expect("updates");
+
+    assert_eq!(
+        h.dispatcher.update(&in_doubt("c1"), 30).expect("updates"),
+        Some(State::InDoubt)
+    );
+    // The stream ending afterwards has nothing left to classify.
+    assert_eq!(
+        h.dispatcher.stream_ended(40).expect("closes"),
+        Vec::<State>::new()
+    );
+    h.finish();
+}

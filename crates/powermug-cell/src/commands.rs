@@ -408,6 +408,13 @@ impl Dispatcher {
                     .move_to(&id, State::SuccessUnverified, now_ns, "")
                     .map(Some);
             }
+            // The link was lost after a confirmed execution: the termination will not come.
+            if status == pb::CommandStatus::InDoubt && self.awaiting_termination.remove(&id) {
+                return self
+                    .journal
+                    .move_to(&id, State::InDoubt, now_ns, &update.reason)
+                    .map(Some);
+            }
             return Ok(None);
         };
         let Open { emission, select } = open;
@@ -444,6 +451,9 @@ impl Dispatcher {
                 emission.finish(Outcome::NotSent(update.reason.clone()), now_ns)?;
                 self.journal
                     .move_to(&id, State::Expired, now_ns, &update.reason)?
+            }
+            pb::CommandStatus::InDoubt => {
+                emission.finish(Outcome::Unknown(update.reason.clone()), now_ns)?
             }
             pb::CommandStatus::Terminated | pb::CommandStatus::Unspecified => emission.finish(
                 Outcome::Unknown(format!("unexpected answer {status:?}")),

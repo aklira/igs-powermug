@@ -203,6 +203,9 @@ enum CommandStatus {
   REFUSED = 4;
   // The command expired before its emission.
   EXPIRED = 5;
+  // The link to the station was lost after the command left, before the station answered: the
+  // command may or may not have been executed. It is in doubt, and it is never sent again.
+  IN_DOUBT = 6;
 }
 
 // An adapter's report on one command.
