@@ -98,7 +98,7 @@ pub struct Enforced {
     pub oldest_seq: Option<i64>,
 }
 
-fn class_code(class: EventClass) -> i64 {
+pub(crate) fn class_code(class: EventClass) -> i64 {
     match class {
         EventClass::A => 1,
         EventClass::B => 2,

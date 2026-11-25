@@ -35,6 +35,10 @@ enum Request {
     Last {
         reply: SyncSender<Result<Option<i64>, StoreError>>,
     },
+    Usage {
+        class: EventClass,
+        reply: SyncSender<Result<u64, StoreError>>,
+    },
     PutSnapshot {
         partition: String,
         seq: i64,
@@ -147,6 +151,9 @@ fn answer(log: &mut TelemetryLog, request: Request) {
         Request::Last { reply } => {
             let _ = reply.send(log.last_seq());
         }
+        Request::Usage { class, reply } => {
+            let _ = reply.send(log.usage(class));
+        }
         Request::PutSnapshot {
             partition,
             seq,
@@ -184,6 +191,12 @@ impl Journal for GroupJournal {
     fn last_seq(&self) -> Result<Option<i64>, StoreError> {
         let (reply, waiting) = mpsc::sync_channel(1);
         self.send(Request::Last { reply })?;
+        waiting.recv().map_err(|_| StoreError::WriterStopped)?
+    }
+
+    fn usage(&self, class: EventClass) -> Result<u64, StoreError> {
+        let (reply, waiting) = mpsc::sync_channel(1);
+        self.send(Request::Usage { class, reply })?;
         waiting.recv().map_err(|_| StoreError::WriterStopped)?
     }
 

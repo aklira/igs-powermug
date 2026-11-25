@@ -160,6 +160,8 @@ impl PointTable {
 pub enum LaneError {
     #[error("point index {0} is not in the point table; the batch was refused")]
     UnknownPoint(u32),
+    #[error("the {0:?} class is saturated: the batch was refused")]
+    Saturated(EventClass),
     #[error("no point of the table is attached to session {0}")]
     UnknownSession(u32),
     #[error("the snapshot cannot be restored: {0}")]
@@ -226,6 +228,23 @@ pub struct Lane {
     last_accepted_wall_ns: Option<i64>,
     /// Changes of the connection state of each session, lost or restored, since the start.
     connection_events: HashMap<SessionId, u32>,
+    /// The journal quota of each class, in events (see [`crate::saturation`]), by [`class_slot`].
+    quotas: [u64; 4],
+    thresholds: crate::saturation::Thresholds,
+    /// Events dropped by the saturation policy, per class, by [`class_slot`].
+    shed_counts: [u64; 4],
+    /// Events refused by the saturation policy, per class, by [`class_slot`].
+    refused_counts: [u64; 4],
+}
+
+/// The slot of a class in the per-class tables of a lane.
+fn class_slot(class: EventClass) -> usize {
+    match class {
+        EventClass::A => 0,
+        EventClass::B => 1,
+        EventClass::C => 2,
+        EventClass::Critical => 3,
+    }
 }
 
 /// How often a lane takes a snapshot of its image (§7.2, H).
@@ -255,6 +274,16 @@ impl Lane {
             live: crate::ring::LiveRing::new(crate::ring::DEFAULT_CAPACITY),
             last_accepted_wall_ns: None,
             connection_events: HashMap::new(),
+            // The critical class has its own store: no telemetry quota applies to it.
+            quotas: [
+                crate::saturation::DEFAULT_QUOTA,
+                crate::saturation::DEFAULT_QUOTA,
+                crate::saturation::DEFAULT_QUOTA,
+                u64::MAX,
+            ],
+            thresholds: crate::saturation::Thresholds::default(),
+            shed_counts: [0; 4],
+            refused_counts: [0; 4],
         }
     }
 
@@ -423,6 +452,7 @@ impl Lane {
                 return Err(LaneError::UnknownPoint(event.point.0));
             }
         }
+        let shed_c = self.admit(events)?;
 
         let expired = self.supervisor.expire(times.monotonic_ns);
         let stale = match self.stale_events(&expired, times.wall_ns) {
@@ -451,7 +481,7 @@ impl Lane {
                 return Err(err);
             }
         };
-        self.publish(&entries, committed.as_ref());
+        self.publish(&entries, committed.as_ref(), shed_c);
 
         for entry in &entries {
             if let Journaled::Point { event, origin } = entry {
@@ -523,7 +553,7 @@ impl Lane {
         }
 
         let committed = self.append(&entries)?;
-        self.publish(&entries, committed.as_ref());
+        self.publish(&entries, committed.as_ref(), false);
         for entry in &entries {
             if let Journaled::Point { event, .. } = entry {
                 self.image.apply(event)?;
@@ -580,6 +610,72 @@ impl Lane {
     #[must_use]
     pub fn last_accepted_wall_ns(&self) -> Option<i64> {
         self.last_accepted_wall_ns
+    }
+
+    /// Sets the journal quota of a class, in events.
+    pub fn set_quota(&mut self, class: EventClass, quota: u64) {
+        self.quotas[class_slot(class)] = quota;
+    }
+
+    /// Sets the thresholds of the saturation levels, as percentages of the quotas.
+    pub fn set_thresholds(&mut self, thresholds: crate::saturation::Thresholds) {
+        self.thresholds = thresholds;
+    }
+
+    /// The events of `class` dropped (shed) and refused by the saturation policy so far.
+    #[must_use]
+    pub fn losses(&self, class: EventClass) -> (u64, u64) {
+        (
+            self.shed_counts[class_slot(class)],
+            self.refused_counts[class_slot(class)],
+        )
+    }
+
+    /// The saturation level of one class: its journal usage against its quota.
+    fn class_level(&self, class: EventClass) -> Result<crate::saturation::Level, LaneError> {
+        let quota = self.quotas[class_slot(class)];
+        let used = self.log.usage(class)?;
+        Ok(crate::saturation::level(used, quota, self.thresholds))
+    }
+
+    /// Decides whether a batch is admitted under the saturation policy. Returns whether the class
+    /// C events of the batch are shed. A refused batch changes nothing and is counted.
+    fn admit(&mut self, events: &[PointEvent]) -> Result<bool, LaneError> {
+        let mut shed_c = false;
+        let mut classes: Vec<EventClass> = Vec::new();
+        for event in events {
+            if let Some(spec) = self.table.get(event.point) {
+                if !classes.contains(&spec.class) {
+                    classes.push(spec.class);
+                }
+            }
+        }
+        // Class C is sacrificable: it follows the most loaded telemetry class (A or B).
+        let telemetry = self
+            .class_level(EventClass::A)?
+            .max(self.class_level(EventClass::B)?);
+        for class in classes {
+            let level = if class == EventClass::C {
+                telemetry
+            } else {
+                self.class_level(class)?
+            };
+            match crate::saturation::decide(class, level) {
+                crate::saturation::Decision::Keep => {}
+                crate::saturation::Decision::Shed => shed_c = true,
+                crate::saturation::Decision::Refuse => {
+                    let count = events
+                        .iter()
+                        .filter(|event| {
+                            self.table.get(event.point).map(|spec| spec.class) == Some(class)
+                        })
+                        .count();
+                    self.refused_counts[class_slot(class)] += count as u64;
+                    return Err(LaneError::Saturated(class));
+                }
+            }
+        }
+        Ok(shed_c)
     }
 
     /// The number of changes of the connection state of `session` since the start.
@@ -642,7 +738,7 @@ impl Lane {
     /// Keeps the envelopes of the point items of a commit for publication, and the journaled ones
     /// in the live ring. The journaled items take the sequence numbers of the commit in order;
     /// class C items are not journaled and take none.
-    fn publish(&mut self, entries: &[Journaled], committed: Option<&Committed>) {
+    fn publish(&mut self, entries: &[Journaled], committed: Option<&Committed>, shed_c: bool) {
         let mut next = committed.map(|commit| commit.first_seq);
         for entry in entries {
             let Journaled::Point { event, origin } = entry else {
@@ -651,6 +747,10 @@ impl Lane {
             let Some(spec) = self.table.get(event.point) else {
                 continue;
             };
+            if shed_c && spec.class == EventClass::C {
+                self.shed_counts[class_slot(EventClass::C)] += 1;
+                continue;
+            }
             let envelope = envelope(
                 event,
                 &spec.site_id,

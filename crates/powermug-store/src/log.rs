@@ -291,6 +291,20 @@ impl TelemetryLog {
         Ok(row)
     }
 
+    /// The number of events of `class` the log retains: its usage against the quota.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Database`] on a read failure.
+    pub fn usage(&self, class: EventClass) -> Result<u64, StoreError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE class = ?1",
+            [crate::cursors::class_code(class)],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
     /// The highest sequence number in the log, if any.
     ///
     /// # Errors

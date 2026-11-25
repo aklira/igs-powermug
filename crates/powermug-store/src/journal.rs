@@ -71,6 +71,13 @@ pub trait Journal: Send + std::fmt::Debug {
     /// Returns a database error when the read fails.
     fn last_seq(&self) -> Result<Option<i64>, StoreError>;
 
+    /// The number of events of `class` the journal retains: its usage against the quota.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the read fails.
+    fn usage(&self, class: EventClass) -> Result<u64, StoreError>;
+
     /// Stores a snapshot of the image of `partition` at journal sequence `seq`.
     ///
     /// # Errors
@@ -98,6 +105,10 @@ impl Journal for TelemetryLog {
 
     fn last_seq(&self) -> Result<Option<i64>, StoreError> {
         TelemetryLog::last_seq(self)
+    }
+
+    fn usage(&self, class: EventClass) -> Result<u64, StoreError> {
+        TelemetryLog::usage(self, class)
     }
 
     fn put_snapshot(
