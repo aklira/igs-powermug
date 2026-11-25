@@ -2,10 +2,10 @@
 
 Implementation status of Powermug, against [specifications/IMPLEMENTATION.md](specifications/IMPLEMENTATION.md). Update this file whenever a task or phase changes state.
 
-- **Last updated:** 2026-11-24
-- **Current phase:** P3 · Command plane, in progress; P2 kept open (bench and decision 9 pending)
+- **Last updated:** 2026-11-25
+- **Current phase:** P4 · Store-and-forward, Kafka, MQTT 5, indicators, in progress; P3 and P2 kept open (bench and decision 9 pending)
 - **Milestones reached:** none (M1 to M5 are not reached)
-- **Overall progress:** 21 %
+- **Overall progress:** 25 %
 
 | Phase | Progress | Checklist (done / partial / blocked / not started) |
 |---|---|---|
@@ -13,7 +13,7 @@ Implementation status of Powermug, against [specifications/IMPLEMENTATION.md](sp
 | P1 · Foundations | 67 % | 6 / 4 / 0 / 2 |
 | P2 · IEC 104 telemetry loop | 80 % | 14 / 7 / 0 / 1 |
 | P3 · Command plane | 50 % | 0 / 5 / 0 / 0 |
-| P4 · Store-and-forward, Kafka, MQTT 5, indicators | 0 % | 0 / 0 / 0 / 7 |
+| P4 · Store-and-forward, Kafka, MQTT 5, indicators | 43 % | 0 / 6 / 0 / 1 |
 | P5 · Processing N1 and N2, cell scope | 0 % | 0 / 0 / 1 / 7 |
 | P6 · Processing adapters, guards, ownership transfer | 0 % | 0 / 0 / 0 / 7 |
 | P7 · P1 protocols, ARM64, fidelity, PKI | 0 % | 0 / 0 / 1 / 6 |
