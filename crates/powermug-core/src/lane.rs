@@ -424,6 +424,11 @@ impl Lane {
         self.log.as_ref()
     }
 
+    /// The journal of the lane, for the acknowledgements of the destinations.
+    pub fn log_mut(&mut self) -> &mut dyn Journal {
+        self.log.as_mut()
+    }
+
     /// The cycle state of `point`, for tests and diagnostics.
     #[must_use]
     pub fn supervisor_state(&self, point: PointIndex) -> Option<crate::cycle::CycleState> {

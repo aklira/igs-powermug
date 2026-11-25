@@ -1601,6 +1601,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tonic",
  "uuid",
 ]
 

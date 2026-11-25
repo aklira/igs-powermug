@@ -1,6 +1,7 @@
 //! The journal as the core uses it: one trait, implemented by a file opened by
 //! the cell, and by a handle onto the single writer of the cell (§7.2).
 
+use crate::cursors::Cursor;
 use crate::log::{
     Committed, EventClass, NewEvent, Snapshot, StoreError, StoredEvent, TelemetryLog,
 };
@@ -78,6 +79,27 @@ pub trait Journal: Send + std::fmt::Debug {
     /// Returns a database error when the read fails.
     fn usage(&self, class: EventClass) -> Result<u64, StoreError>;
 
+    /// The cursor of `destination`, if it is declared.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the read fails.
+    fn cursor(&self, destination: &str) -> Result<Option<Cursor>, StoreError>;
+
+    /// Records that `destination` has acknowledged every event up to `seq`. The cursor never moves
+    /// backwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::UnknownCursor`] for an undeclared destination, and
+    /// [`StoreError::AheadOfLog`] for a sequence number not yet journaled.
+    fn acknowledge(
+        &mut self,
+        destination: &str,
+        seq: i64,
+        now_ns: i64,
+    ) -> Result<Cursor, StoreError>;
+
     /// Stores a snapshot of the image of `partition` at journal sequence `seq`.
     ///
     /// # Errors
@@ -109,6 +131,19 @@ impl Journal for TelemetryLog {
 
     fn usage(&self, class: EventClass) -> Result<u64, StoreError> {
         TelemetryLog::usage(self, class)
+    }
+
+    fn cursor(&self, destination: &str) -> Result<Option<Cursor>, StoreError> {
+        TelemetryLog::cursor(self, destination)
+    }
+
+    fn acknowledge(
+        &mut self,
+        destination: &str,
+        seq: i64,
+        now_ns: i64,
+    ) -> Result<Cursor, StoreError> {
+        TelemetryLog::acknowledge(self, destination, seq, now_ns)
     }
 
     fn put_snapshot(

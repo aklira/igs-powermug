@@ -19,7 +19,7 @@ thiserror = "2"
 # (1.89) now allows; moving to them is a separate change.
 tonic = { version = "=0.14.5", default-features = false, features = ["server", "transport", "codegen", "router"] }
 tonic-prost = "=0.14.5"
-tokio = { version = "1", features = ["net", "rt", "macros", "io-util", "sync"] }
+tokio = { version = "1", features = ["net", "rt", "macros", "io-util", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 hyper-util = { version = "0.1.11", features = ["tokio"] }
 tower = { version = "0.5", features = ["util"] }

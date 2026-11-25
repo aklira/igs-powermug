@@ -12,6 +12,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::cursors::Cursor;
 use crate::journal::{Journal, OwnedEvent};
 use crate::log::{
     Committed, EventClass, NewEvent, Snapshot, StoreError, StoredEvent, TelemetryLog,
@@ -38,6 +39,16 @@ enum Request {
     Usage {
         class: EventClass,
         reply: SyncSender<Result<u64, StoreError>>,
+    },
+    DestinationCursor {
+        destination: String,
+        reply: SyncSender<Result<Option<Cursor>, StoreError>>,
+    },
+    Acknowledge {
+        destination: String,
+        seq: i64,
+        now_ns: i64,
+        reply: SyncSender<Result<Cursor, StoreError>>,
     },
     PutSnapshot {
         partition: String,
@@ -154,6 +165,17 @@ fn answer(log: &mut TelemetryLog, request: Request) {
         Request::Usage { class, reply } => {
             let _ = reply.send(log.usage(class));
         }
+        Request::DestinationCursor { destination, reply } => {
+            let _ = reply.send(log.cursor(&destination));
+        }
+        Request::Acknowledge {
+            destination,
+            seq,
+            now_ns,
+            reply,
+        } => {
+            let _ = reply.send(log.acknowledge(&destination, seq, now_ns));
+        }
         Request::PutSnapshot {
             partition,
             seq,
@@ -197,6 +219,31 @@ impl Journal for GroupJournal {
     fn usage(&self, class: EventClass) -> Result<u64, StoreError> {
         let (reply, waiting) = mpsc::sync_channel(1);
         self.send(Request::Usage { class, reply })?;
+        waiting.recv().map_err(|_| StoreError::WriterStopped)?
+    }
+
+    fn cursor(&self, destination: &str) -> Result<Option<Cursor>, StoreError> {
+        let (reply, waiting) = mpsc::sync_channel(1);
+        self.send(Request::DestinationCursor {
+            destination: destination.to_owned(),
+            reply,
+        })?;
+        waiting.recv().map_err(|_| StoreError::WriterStopped)?
+    }
+
+    fn acknowledge(
+        &mut self,
+        destination: &str,
+        seq: i64,
+        now_ns: i64,
+    ) -> Result<Cursor, StoreError> {
+        let (reply, waiting) = mpsc::sync_channel(1);
+        self.send(Request::Acknowledge {
+            destination: destination.to_owned(),
+            seq,
+            now_ns,
+            reply,
+        })?;
         waiting.recv().map_err(|_| StoreError::WriterStopped)?
     }
 

@@ -33,8 +33,46 @@ impl Refusal {
     }
 }
 
+/// The North feed of one destination: the cell's events after a journal sequence, and the
+/// acknowledged position of the destination (SPECIFICATIONS 10.3). Events are read from the
+/// journal when the live ring no longer holds them, so a slow destination loses nothing.
+pub trait NorthFeed: Send {
+    /// The acknowledged position: the journal sequence of the last event the destination has
+    /// acknowledged, zero before any.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Refusal`] when the cursor cannot be read.
+    fn cursor(&mut self) -> Result<i64, Refusal>;
+
+    /// Up to `limit` events after the journal sequence `after`, each with its own sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Refusal`] when the events cannot be read.
+    fn next(&mut self, after: i64, limit: u32) -> Result<Vec<(i64, Envelope)>, Refusal>;
+
+    /// Records that the destination has acknowledged the events up to `seq`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Refusal`] when the acknowledgement cannot be recorded.
+    fn acknowledge(&mut self, seq: i64) -> Result<(), Refusal>;
+}
+
 /// Commits the batches of one adapter instance, in the order they arrive.
 pub trait BatchSink: Send {
+    /// The North feed of `destination`, when the sink can serve one. `None` serves the live
+    /// broadcast only.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Refusal`] when the destination is not declared.
+    fn north_feed(&mut self, destination: &str) -> Result<Option<Box<dyn NorthFeed>>, Refusal> {
+        let _ = destination;
+        Ok(None)
+    }
+
     /// Commits `batch`. Returns `Ok` only when the batch is durable.
     ///
     /// # Errors

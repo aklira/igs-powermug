@@ -9,10 +9,11 @@
 //! committed it, or `REJECTED` with the reason. Its credits return with that
 //! last acknowledgement, so a refused batch does not shrink the window.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{broadcast, mpsc, Notify};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::server::UdsConnectInfo;
 use tonic::{Request, Response, Status, Streaming};
@@ -26,8 +27,8 @@ use crate::proto::v1::{
     Capabilities, CommandDispatch, CommandUpdate, CommunicationAck, DeliveryAck, DeliveryBatch,
     EventBatch, HandshakeResponse, HealthAck, HealthReport, InterrogateRequest,
 };
-use crate::sink::{BatchSink, Durability, Refusal};
-use powermug_pivot::proto::v1::CommunicationState;
+use crate::sink::{BatchSink, Durability, NorthFeed, Refusal};
+use powermug_pivot::proto::v1::{CommunicationState, Envelope};
 
 /// Batches a North subscriber may hold unacknowledged.
 pub const PUBLISH_WINDOW: usize = 256;
@@ -56,6 +57,8 @@ struct Accepted {
 pub struct CoreService {
     config: Arc<CoreConfig>,
     accepted: Arc<Mutex<Option<Accepted>>>,
+    /// The destination the North adapter announced in its handshake; empty for a South adapter.
+    destination: Arc<Mutex<String>>,
     sink: Arc<Mutex<Box<dyn BatchSink>>>,
     /// Notified on every accepted health report, if the owner watches them.
     heartbeat: Option<Arc<Notify>>,
@@ -71,6 +74,7 @@ impl CoreService {
         Self {
             config: Arc::new(config),
             accepted: Arc::new(Mutex::new(None)),
+            destination: Arc::new(Mutex::new(String::new())),
             sink: Arc::new(Mutex::new(sink)),
             heartbeat: None,
             dispatches: Arc::new(Mutex::new(None)),
@@ -140,6 +144,145 @@ fn version(major: u32, minor: u32) -> crate::proto::v1::Version {
     crate::proto::v1::Version { major, minor }
 }
 
+/// The live broadcast of the committed events to a destination without a feed: a window of
+/// unacknowledged batches, and a lost event is reported, never skipped.
+async fn serve_broadcast(
+    mut acks: Streaming<DeliveryAck>,
+    mut events: broadcast::Receiver<Envelope>,
+    tx: mpsc::Sender<Result<DeliveryBatch, Status>>,
+) {
+    let mut next_sequence = 1u64;
+    let mut unacknowledged = BTreeSet::new();
+    loop {
+        let may_send = unacknowledged.len() < PUBLISH_WINDOW;
+        tokio::select! {
+            ack = acks.message() => match ack {
+                Ok(Some(ack)) => {
+                    unacknowledged.remove(&ack.sequence);
+                }
+                Ok(None) | Err(_) => return,
+            },
+            event = events.recv(), if may_send => {
+                let first = match event {
+                    Ok(envelope) => envelope,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        // A lost event is reported, never skipped silently.
+                        let _ = tx
+                            .send(Err(Status::data_loss(format!(
+                                "the subscriber fell behind: {skipped} events were skipped"
+                            ))))
+                            .await;
+                        return;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                let mut batch = vec![first];
+                while batch.len() < PUBLISH_BATCH {
+                    match events.try_recv() {
+                        Ok(envelope) => batch.push(envelope),
+                        Err(_) => break,
+                    }
+                }
+                let sequence = next_sequence;
+                next_sequence += 1;
+                unacknowledged.insert(sequence);
+                let delivery = DeliveryBatch {
+                    sequence,
+                    events: batch,
+                    last_seq: 0,
+                };
+                if tx.send(Ok(delivery)).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The North feed of a destination: the events after its acknowledged position, from the live ring
+/// or the journal, a window of batches at a time. The cursor moves only over a contiguous prefix of
+/// acknowledged batches, so a batch not acknowledged is delivered again after a restart.
+async fn serve_feed(
+    mut feed: Box<dyn NorthFeed>,
+    mut acks: Streaming<DeliveryAck>,
+    mut wake: broadcast::Receiver<Envelope>,
+    tx: mpsc::Sender<Result<DeliveryBatch, Status>>,
+) {
+    let mut sent_upto = match feed.cursor() {
+        Ok(cursor) => cursor,
+        Err(refusal) => {
+            let _ = tx.send(Err(Status::internal(refusal.reason))).await;
+            return;
+        }
+    };
+    let mut acked_upto = sent_upto;
+    let mut next_sequence = 1u64;
+    // The batches in flight, by sequence: the journal position of their last event, and whether
+    // the destination has acknowledged them.
+    let mut in_flight: BTreeMap<u64, (i64, bool)> = BTreeMap::new();
+    let mut commits_open = true;
+    loop {
+        if in_flight.len() < PUBLISH_WINDOW {
+            match feed.next(sent_upto, u32::try_from(PUBLISH_BATCH).unwrap_or(u32::MAX)) {
+                Ok(items) if !items.is_empty() => {
+                    let last = items.last().map_or(sent_upto, |(seq, _)| *seq);
+                    let events = items.into_iter().map(|(_, envelope)| envelope).collect();
+                    let sequence = next_sequence;
+                    next_sequence += 1;
+                    in_flight.insert(sequence, (last, false));
+                    sent_upto = last;
+                    let delivery = DeliveryBatch {
+                        sequence,
+                        events,
+                        last_seq: last,
+                    };
+                    if tx.send(Ok(delivery)).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                Ok(_) => {}
+                Err(refusal) => {
+                    let _ = tx.send(Err(Status::data_loss(refusal.reason))).await;
+                    return;
+                }
+            }
+        }
+        tokio::select! {
+            ack = acks.message() => match ack {
+                Ok(Some(ack)) => {
+                    if let Some(entry) = in_flight.get_mut(&ack.sequence) {
+                        entry.1 = true;
+                    }
+                    // Move the cursor over the contiguous prefix of acknowledged batches.
+                    let mut cursor = None;
+                    while let Some((&sequence, &(last, acked))) = in_flight.first_key_value() {
+                        if !acked {
+                            break;
+                        }
+                        in_flight.remove(&sequence);
+                        cursor = Some(last);
+                    }
+                    if let Some(cursor) = cursor.filter(|cursor| *cursor > acked_upto) {
+                        if let Err(refusal) = feed.acknowledge(cursor) {
+                            let _ = tx.send(Err(Status::internal(refusal.reason))).await;
+                            return;
+                        }
+                        acked_upto = cursor;
+                    }
+                }
+                Ok(None) | Err(_) => return,
+            },
+            woken = wake.recv(), if commits_open => {
+                if matches!(woken, Err(broadcast::error::RecvError::Closed)) {
+                    commits_open = false;
+                }
+            },
+            () = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl AdapterControl for CoreService {
     async fn describe_capabilities(
@@ -156,6 +299,10 @@ impl AdapterControl for CoreService {
             .as_ref()
             .map_or(0, |limits| limits.window_events);
         self.set_accepted(Accepted { window_events });
+        self.destination
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone_from(&capabilities.destination);
 
         Ok(Response::new(HandshakeResponse {
             api_version: Some(version(API_VERSION.major, API_VERSION.minor)),
@@ -228,60 +375,30 @@ impl AdapterData for CoreService {
         self.accepted().ok_or_else(|| {
             Status::failed_precondition("no accepted handshake for this instance")
         })?;
-        let mut acks = request.into_inner();
-        let mut events = {
+        let destination = self
+            .destination
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let feed = {
+            let mut sink = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
+            sink.north_feed(&destination)
+                .map_err(|refusal| Status::failed_precondition(refusal.reason))?
+        };
+        let acks = request.into_inner();
+        let events = {
             let mut sink = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
             sink.subscribe()
         };
         let (tx, rx) = mpsc::channel(PUBLISH_WINDOW);
-        tokio::spawn(async move {
-            let mut next_sequence = 1u64;
-            let mut unacknowledged = BTreeSet::new();
-            loop {
-                let may_send = unacknowledged.len() < PUBLISH_WINDOW;
-                tokio::select! {
-                    ack = acks.message() => match ack {
-                        Ok(Some(ack)) => {
-                            unacknowledged.remove(&ack.sequence);
-                        }
-                        Ok(None) | Err(_) => return,
-                    },
-                    event = events.recv(), if may_send => {
-                        let first = match event {
-                            Ok(envelope) => envelope,
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                // A lost event is reported, never skipped silently.
-                                let _ = tx
-                                    .send(Err(Status::data_loss(format!(
-                                        "the subscriber fell behind: {skipped} events were skipped"
-                                    ))))
-                                    .await;
-                                return;
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                        };
-                        let mut batch = vec![first];
-                        while batch.len() < PUBLISH_BATCH {
-                            match events.try_recv() {
-                                Ok(envelope) => batch.push(envelope),
-                                Err(_) => break,
-                            }
-                        }
-                        let sequence = next_sequence;
-                        next_sequence += 1;
-                        unacknowledged.insert(sequence);
-                        let delivery = DeliveryBatch {
-                            sequence,
-                            events: batch,
-                            last_seq: 0,
-                        };
-                        if tx.send(Ok(delivery)).await.is_err() {
-                            return;
-                        }
-                    }
-                }
+        match feed {
+            Some(feed) => {
+                tokio::spawn(serve_feed(feed, acks, events, tx));
             }
-        });
+            None => {
+                tokio::spawn(serve_broadcast(acks, events, tx));
+            }
+        }
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 

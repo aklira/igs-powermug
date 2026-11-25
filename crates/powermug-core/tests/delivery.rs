@@ -3,9 +3,10 @@
 //! served from the journal, marked as a replay and capped per call, and nothing is lost. A
 //! reduced ACC-001: every journaled event reaches the destination.
 
-use powermug_core::delivery::feed;
+use powermug_core::delivery::{self, Batch, DeliveryError};
 use powermug_core::lane::{Lane, PointSpec, PointTable, SessionId};
 use powermug_core::Times;
+use powermug_pivot::proto::v1 as pb;
 use powermug_pivot::{EventId, PointEvent, PointIndex, Quality, Value};
 use powermug_store::{EventClass, Start, TelemetryLog};
 
@@ -66,6 +67,29 @@ fn open(dir: &std::path::Path) -> (Lane, TelemetryLog) {
     (lane, reader)
 }
 
+/// The next batch for the destination, from its cursor: what the cell serves it.
+fn feed(
+    lane: &Lane,
+    reader: &TelemetryLog,
+    destination: &str,
+    limit: u32,
+) -> Result<Batch, DeliveryError> {
+    let cursor = reader
+        .cursor(destination)?
+        .ok_or_else(|| powermug_store::StoreError::UnknownCursor(destination.to_owned()))?
+        .last_seq;
+    delivery::after(lane, cursor, limit)
+}
+
+/// The envelopes of a batch, in order.
+fn envelopes(batch: &Batch) -> Vec<pb::Envelope> {
+    batch
+        .items
+        .iter()
+        .map(|(_, envelope)| envelope.clone())
+        .collect()
+}
+
 #[test]
 fn a_caught_up_destination_is_served_from_the_live_ring() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -77,7 +101,7 @@ fn a_caught_up_destination_is_served_from_the_live_ring() {
 
     let fed = feed(&lane, &reader, DESTINATION, 10).expect("feeds");
     assert!(!fed.replay, "served from the ring, not the journal");
-    let ids: Vec<Vec<u8>> = fed.envelopes.iter().map(|e| e.event_id.clone()).collect();
+    let ids: Vec<Vec<u8>> = envelopes(&fed).iter().map(|e| e.event_id.clone()).collect();
     assert_eq!(ids.len(), 3);
     assert_eq!(ids[0], event_id(1).as_bytes().to_vec());
     assert_eq!(ids[2], event_id(3).as_bytes().to_vec());
@@ -96,7 +120,7 @@ fn a_destination_behind_the_ring_is_replayed_from_the_journal_without_loss() {
     // The ring holds the last two only: the destination must read the journal.
     let fed = feed(&lane, &reader, DESTINATION, 10).expect("feeds");
     assert!(fed.replay, "marked as a replay");
-    let ids: Vec<Vec<u8>> = fed.envelopes.iter().map(|e| e.event_id.clone()).collect();
+    let ids: Vec<Vec<u8>> = envelopes(&fed).iter().map(|e| e.event_id.clone()).collect();
     let expected: Vec<Vec<u8>> = (1..=5).map(|id| event_id(id).as_bytes().to_vec()).collect();
     assert_eq!(
         ids, expected,
@@ -116,7 +140,7 @@ fn a_replay_is_capped_per_call() {
 
     let fed = feed(&lane, &reader, DESTINATION, 2).expect("feeds");
     assert!(fed.replay);
-    assert_eq!(fed.envelopes.len(), 2, "at most the limit per call");
+    assert_eq!(envelopes(&fed).len(), 2, "at most the limit per call");
 }
 
 #[test]
@@ -131,13 +155,13 @@ fn an_acknowledged_destination_is_fed_only_what_follows_its_cursor() {
     reader.acknowledge(DESTINATION, 5, 2).expect("acknowledges");
 
     let fed = feed(&lane, &reader, DESTINATION, 10).expect("feeds");
-    assert!(fed.envelopes.is_empty(), "nothing after the cursor");
+    assert!(envelopes(&fed).is_empty(), "nothing after the cursor");
 
     lane.ingest(&[event(6)], at(6)).expect("ingests");
     let fed = feed(&lane, &reader, DESTINATION, 10).expect("feeds");
     assert!(!fed.replay, "the ring covers the cursor again");
-    assert_eq!(fed.envelopes.len(), 1);
-    assert_eq!(fed.envelopes[0].event_id, event_id(6).as_bytes().to_vec());
+    assert_eq!(envelopes(&fed).len(), 1);
+    assert_eq!(envelopes(&fed)[0].event_id, event_id(6).as_bytes().to_vec());
 }
 
 #[test]

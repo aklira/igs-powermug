@@ -57,14 +57,14 @@ impl LiveRing {
         cursor + 1 >= self.oldest()
     }
 
-    /// Up to `limit` envelopes after `cursor`, in sequence order.
+    /// Up to `limit` envelopes after `after`, in sequence order, each with its sequence number.
     #[must_use]
-    pub fn after(&self, cursor: i64, limit: usize) -> Vec<pb::Envelope> {
+    pub fn after(&self, after: i64, limit: usize) -> Vec<(i64, pb::Envelope)> {
         self.events
             .iter()
-            .filter(|(seq, _)| *seq > cursor)
+            .filter(|(seq, _)| *seq > after)
             .take(limit)
-            .map(|(_, envelope)| envelope.clone())
+            .map(|(seq, envelope)| (*seq, envelope.clone()))
             .collect()
     }
 }
