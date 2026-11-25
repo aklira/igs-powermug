@@ -1496,9 +1496,12 @@ dependencies = [
  "powermug-revision",
  "powermug-sandbox",
  "powermug-store",
+ "rcgen",
+ "rustls",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

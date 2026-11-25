@@ -36,4 +36,7 @@ powermug-core = { path = "../powermug-core" }
 powermug-pivot = { path = "../powermug-pivot" }
 powermug-store = { path = "../powermug-store" }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+rcgen = { version = "=0.14.7", default-features = false, features = ["ring", "pem"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
