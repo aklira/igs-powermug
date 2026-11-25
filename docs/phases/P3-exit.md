@@ -19,6 +19,8 @@ The phase exit names three `ACC-*` criteria, three MVP scenarios, and the comman
 | MVP S19 | A cut of the active connection between the activation confirmation and the end of execution: the command is `IN_DOUBT`, never replayed | A confirmed execution not terminated is `IN_DOUBT` when the stream is cut and at restart (`an_execution_confirmed_but_not_terminated_is_in_doubt_when_the_stream_is_cut`, `an_execution_confirmed_but_not_terminated_is_in_doubt_at_restart`); a link lost after the confirmation is reported by the adapter and classed `IN_DOUBT` (`a_link_lost_after_a_confirmed_execution_puts_it_in_doubt`); the link cut before the answer (`powermug/tests/link_cut.rs`) | Yes, on loopback, on the development host | A real cut of the active connection with equipment. The order R3 to check the state of the equipment is not in the repository |
 | NFR-PERF-003 | Receiving then persisting a command: p99 at most 20 ms | The writer, on this host: p99 0.68 ms for a submission and a transition (500 pairs, `powermug-command/tests/writer.rs`) | Measured on the development host only; not a qualification result (decision 2) | The qualification hardware (decision 2) |
 
+Decided since the grid was written: the identity of an IEC 104 master is its TLS client certificate, with the `openssl` backend (owner's decisions, 2026-11-25). The library gap G-7 blocks S18 until it is fixed.
+
 Since the grid was written: the S17 command path runs end to end (`command_path.rs`). A single node is the confirmed owner of its partitions at opening (owner's decision, 2026-11-25), so the commands are accepted from the start of the cell. Before, no production path took ownership.
 
 ## Blockers, by owner
@@ -27,7 +29,8 @@ Since the grid was written: the S17 command path runs end to end (`command_path.
 |---|---|---|
 | Qualification hardware and the MVP bench | Owner (decision 2) | ACC-002, ACC-003, ACC-008, S17 to S19, NFR-PERF-003 |
 | Direct execution refused by `igs-iec104` (gap G-6) | Owner of `igs-iec104` (report drafted in `docs/reports/igs-iec104-report-direct-execute.md`, not sent) | S17 with direct commands |
-| The IEC 104 North entry for commands | Powermug (P4 or later) | S18 with a second IEC 104 master |
+| The identity of the station's operations (gap G-7 in `igs-iec104`: the handler does not know the connection of an operation) | Owner of `igs-iec104`, then Powermug (the IEC 104 North entry) | S18 with a second IEC 104 master |
+| The TLS backend of IEC 104 (decision taken: `openssl`, not yet enabled: nothing uses it) | Powermug, when the North entry is built | IEC 62351-3 identity from the certificate |
 | Site command rules (ACL of the real site) | Owner, with the partition revisions | Commands enabled on the bench |
 | Location of the separate domain for the audit anchor | Operator | NFR-SEC-008 in production |
 
