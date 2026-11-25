@@ -56,6 +56,7 @@ fn config(dir: &Path) -> CellConfig {
         "cell": "CELL_DC1",
         "telemetry_db": dir.join("telemetry.db"),
         "critical_db": dir.join("critical.db"),
+        "storage": {"shared_quota": true},
         "management": {
             "listen": "127.0.0.1:8443",
             "certificate": "server.pem",

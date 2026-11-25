@@ -54,6 +54,33 @@ pub enum CellError {
     Command(#[from] powermug_command::CommandError),
     #[error("a stored revision cannot be read: {0}")]
     StoredRevision(String),
+    #[error("the telemetry and critical stores share a filesystem without a declared quota (PM-TEL-006): separate them, or set the quotas and declare storage.shared_quota")]
+    SharedVolume,
+}
+
+/// The telemetry and the critical stores must not share a filesystem unless each has a quota
+/// (PM-TEL-006): they are compared by device.
+fn check_volumes(config: &CellConfig) -> Result<(), CellError> {
+    use std::os::unix::fs::MetadataExt;
+    if config.storage.shared_quota {
+        return Ok(());
+    }
+    let device = |path: &std::path::Path| -> Result<u64, CellError> {
+        let parent = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => std::path::Path::new("."),
+        };
+        std::fs::metadata(parent)
+            .map(|metadata| metadata.dev())
+            .map_err(|err| CellError::File {
+                path: parent.display().to_string(),
+                message: err.to_string(),
+            })
+    };
+    if device(&config.telemetry_db)? == device(&config.critical_db)? {
+        return Err(CellError::SharedVolume);
+    }
+    Ok(())
 }
 
 /// The indicators of the cell: those of every lane, measured together.
@@ -97,6 +124,7 @@ impl Cell {
         config: &CellConfig,
         trusted_key: ed25519_dalek::VerifyingKey,
     ) -> Result<Self, CellError> {
+        check_volumes(config)?;
         let (journal, writer) = GroupJournal::spawn(&config.telemetry_db)?;
         let clock = Clock::new();
         let mut lanes = Vec::with_capacity(config.lanes.len());

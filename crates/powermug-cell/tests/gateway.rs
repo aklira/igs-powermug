@@ -17,6 +17,7 @@ const CONFIG: &str = r#"{
   "cell": "CELL_DC1",
   "telemetry_db": "telemetry.db",
   "critical_db": "critical.db",
+  "storage": {"shared_quota": true},
   "management": {
     "listen": "127.0.0.1:8443",
     "certificate": "server.pem",

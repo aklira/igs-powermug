@@ -11,6 +11,7 @@ fn config(dir: &std::path::Path) -> CellConfig {
   "cell": "CELL_DC1",
   "telemetry_db": "{telemetry}",
   "critical_db": "{critical}",
+  "storage": {{"shared_quota": true}},
   "management": {{
     "listen": "127.0.0.1:8443",
     "certificate": "server.pem",
@@ -128,6 +129,7 @@ fn a_single_node_is_the_confirmed_owner_of_its_partition_when_the_cell_opens() {
   "cell": "CELL_DC1",
   "telemetry_db": "{telemetry}",
   "critical_db": "{critical}",
+  "storage": {{"shared_quota": true}},
   "management": {{
     "listen": "127.0.0.1:8443",
     "certificate": "server.pem",

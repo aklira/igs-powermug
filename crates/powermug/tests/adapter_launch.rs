@@ -94,6 +94,7 @@ fn configuration(dir: &std::path::Path, station: SocketAddr, binary: &str) -> Ce
         "cell": "CELL_TEST",
         "telemetry_db": dir.join("telemetry.db"),
         "critical_db": dir.join("critical.db"),
+        "storage": {"shared_quota": true},
         "management": {
             "listen": "127.0.0.1:0",
             "certificate": "unused.pem",

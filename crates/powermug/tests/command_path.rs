@@ -251,6 +251,7 @@ fn config(dir: &std::path::Path, station: SocketAddr, listen: SocketAddr) -> Cel
         "cell": "CELL_DC1",
         "telemetry_db": dir.join("telemetry.db"),
         "critical_db": dir.join("critical.db"),
+        "storage": {"shared_quota": true},
         "management": {
             "listen": listen.to_string(),
             "certificate": dir.join("server.pem"),

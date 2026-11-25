@@ -28,6 +28,18 @@ pub struct CellConfig {
     pub adapters: Option<AdaptersConfig>,
     #[serde(default)]
     pub commands: CommandsConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
+}
+
+/// The storage of the cell (PM-TEL-006). The telemetry and the critical stores are on separate
+/// volumes; on a shared filesystem, each must have a filesystem quota, which the operator declares
+/// here once the quotas are set.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct StorageConfig {
+    #[serde(default)]
+    pub shared_quota: bool,
 }
 
 /// The command settings of the cell. The rules that let an issuer command a point are not here:

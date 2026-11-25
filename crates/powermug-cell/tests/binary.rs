@@ -68,6 +68,7 @@ fn write_config(dir: &Path, listen: SocketAddr) -> std::path::PathBuf {
   "cell": "CELL_TEST",
   "telemetry_db": "{}",
   "critical_db": "{}",
+  "storage": {{"shared_quota": true}},
   "management": {{
     "listen": "{listen}",
     "certificate": "{}",
