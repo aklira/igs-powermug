@@ -10,15 +10,16 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::pkcs8::{spki::der::pem::LineEnding, EncodePublicKey};
 use igs_iec104::process_image::PointValue;
-use igs_iec104::server::{Handler, Operation, Refusal, Server, ServerConfig};
+use igs_iec104::server::{CommandValue, Handler, Operation, Refusal, Server, ServerConfig};
 use igs_iec104_codec::elements::{QualityFlags, Siq};
+use igs_iec104_codec::formats::Cp56Time2a;
 use igs_iec104_codec::header::{CommonAddress, InformationObjectAddress};
 use powermug_cell::config::CellConfig;
 use powermug_cell::serve;
 use powermug_command::{CommandWriter, State};
 use powermug_revision::canonical::canonical_bytes;
 use powermug_revision::partition::partition_content_id;
-use powermug_store::CriticalStore;
+use powermug_store::{CriticalStore, TelemetryLog};
 use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
@@ -33,15 +34,22 @@ const POINT: &str = "S3/TC_005";
 const COMMAND_IOA: u32 = 5;
 const ISSUER: &str = "scada-demo";
 
-/// Accepts every selection and execution, at once.
-struct Accepting;
+/// Accepts every selection and execution at once. An accepted execution is reported to a task
+/// that changes the point of the station: the change is made outside the handler, which runs
+/// under the station's own lock.
+struct Accepting {
+    changes: tokio::sync::mpsc::UnboundedSender<(InformationObjectAddress, bool)>,
+}
 
 impl Handler for Accepting {
     fn select(&self, _operation: &Operation) -> Result<(), Refusal> {
         Ok(())
     }
 
-    fn execute(&self, _operation: &Operation) -> Result<(), Refusal> {
+    fn execute(&self, operation: &Operation) -> Result<(), Refusal> {
+        if let CommandValue::Single(command) = &operation.value {
+            let _ = self.changes.send((operation.address, command.on));
+        }
         Ok(())
     }
 }
@@ -53,12 +61,13 @@ async fn start_station() -> (
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
 ) {
+    let (changes, mut applied) = tokio::sync::mpsc::unbounded_channel();
     let server = Server::bind(
         ServerConfig::new(
             "127.0.0.1:0".parse::<SocketAddr>().expect("addr"),
             CommonAddress::new(1),
         ),
-        Accepting,
+        Accepting { changes },
     )
     .await
     .expect("station binds");
@@ -74,6 +83,17 @@ async fn start_station() -> (
             false,
         )
         .expect("commandable point");
+    let handle = server.handle();
+    tokio::spawn(async move {
+        while let Some((address, on)) = applied.recv().await {
+            let value = PointValue::Single(Siq {
+                on,
+                quality: QualityFlags::default(),
+            });
+            let time = Cp56Time2a::new(1000, 30, 12, 1, 1, 1, 26).expect("in range");
+            let _ = handle.update(address, value, time);
+        }
+    });
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(async move {
         let _ = server
@@ -341,6 +361,34 @@ async fn execute(listen: SocketAddr, pki: &Pki, selected_id: &str) -> Instant {
     panic!("the execution was not sent");
 }
 
+/// The telemetry events of S3 stored so far.
+fn s3_events(dir: &std::path::Path) -> usize {
+    TelemetryLog::open(dir.join("telemetry.db"))
+        .and_then(|log| log.read_from(0, 100_000))
+        .map_or(0, |events| {
+            events
+                .iter()
+                .filter(|event| event.partition == "S3")
+                .count()
+        })
+}
+
+/// Waits until the telemetry of S3 gains an event after the execution: the effect of the command
+/// on the station's point, reaching the cell. Returns the delay, at most two seconds.
+async fn effect_within_two_seconds(
+    dir: &std::path::Path,
+    before: usize,
+    since: Instant,
+) -> Option<Duration> {
+    while since.elapsed() < Duration::from_secs(2) {
+        if s3_events(dir) > before {
+            return Some(since.elapsed());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    None
+}
+
 /// Waits, in the journal, for the command to be terminated, at most two seconds after `since`.
 async fn terminated_within_two_seconds(
     dir: &std::path::Path,
@@ -413,7 +461,9 @@ async fn a_selection_and_an_execution_over_the_api_reach_the_station_and_are_ter
     }
 
     let selected_id = select(listen, &pki, &revision_id).await;
+    let before = s3_events(dir.path());
     let executed_at = execute(listen, &pki, &selected_id).await;
+    let effect = effect_within_two_seconds(dir.path(), before, executed_at).await;
     let terminated_after =
         terminated_within_two_seconds(dir.path(), &selected_id, executed_at).await;
 
@@ -428,6 +478,10 @@ async fn a_selection_and_an_execution_over_the_api_reach_the_station_and_are_ter
     assert!(
         terminated_after.is_some(),
         "the execution was not terminated within two seconds"
+    );
+    assert!(
+        effect.is_some(),
+        "the effect of the execution is not in the telemetry of S3 within two seconds"
     );
     assert!(outcome.is_ok(), "{outcome:?}");
 }
