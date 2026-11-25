@@ -153,10 +153,14 @@ impl Cell {
             let (revision, rules) = active_of_session
                 .remove(&instance.session)
                 .unwrap_or_default();
+            // A single node is the confirmed owner of its partition from its opening (decision of
+            // the owner, 2026-11-25): commands are accepted from then on, at owner epoch 1.
+            let mut ownership = powermug_command::ownership::Ownership::new();
+            ownership.takeover(&config.lanes[instance.lane].site);
             let mut dispatcher = commands::Dispatcher::new(
                 commands.clone(),
                 config::acl_of_rules(&rules),
-                powermug_command::ownership::Ownership::new(),
+                ownership,
                 route.clone(),
             );
             dispatcher.set_active_revision(revision);

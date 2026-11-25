@@ -119,3 +119,46 @@ fn a_command_whose_execution_was_sent_before_the_stop_is_in_doubt_when_the_cell_
     assert_eq!(outcome.action, powermug_command::Action::Nothing);
     cell.close();
 }
+
+#[test]
+fn a_single_node_is_the_confirmed_owner_of_its_partition_when_the_cell_opens() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let with_adapter = format!(
+        r#"{{
+  "cell": "CELL_DC1",
+  "telemetry_db": "{telemetry}",
+  "critical_db": "{critical}",
+  "management": {{
+    "listen": "127.0.0.1:8443",
+    "certificate": "server.pem",
+    "key": "server.key",
+    "client_ca": "ca.pem",
+    "trusted_key": "trusted.pub.pem"
+  }},
+  "lanes": [{{"site": "S3", "revision": 1, "points": [
+    {{"id": "S3/TC_101", "session": 1, "address": 5, "class": "Critical"}}]}}],
+  "adapters": {{
+    "binary": "/bin/true",
+    "directory": "{adapters}",
+    "instances": [{{"session": 1, "kind": "iec104", "stations": ["127.0.0.1:2404"], "common_address": 1}}]
+  }},
+  "commands": {{}}
+}}"#,
+        telemetry = dir.path().join("telemetry.db").display(),
+        critical = dir.path().join("critical.db").display(),
+        adapters = dir.path().join("adapters").display(),
+    );
+    let config = CellConfig::from_json(&with_adapter).expect("valid");
+    let cell = Cell::open(&config, trusted_key()).expect("opens");
+    let link = cell
+        .commands_by_session
+        .get(&1)
+        .expect("the session has a command link");
+    // Owner epoch 1 from the opening: the commands are accepted, and the adapter is activated at
+    // the same epoch.
+    assert_eq!(
+        link.dispatcher.lock().expect("lock").activation_epoch("S3"),
+        1
+    );
+    cell.close();
+}

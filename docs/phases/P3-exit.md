@@ -19,6 +19,8 @@ The phase exit names three `ACC-*` criteria, three MVP scenarios, and the comman
 | MVP S19 | A cut of the active connection between the activation confirmation and the end of execution: the command is `IN_DOUBT`, never replayed | A confirmed execution not terminated is `IN_DOUBT` when the stream is cut, and at restart (`an_execution_confirmed_but_not_terminated_is_in_doubt_when_the_stream_is_cut`, `an_execution_confirmed_but_not_terminated_is_in_doubt_at_restart`); the adapter killed in flight (`adapter_crash.rs`) | Yes, for the cut of the stream and a restart, on the development host | A real cut of the active connection with equipment. The order R3 to check the state of the equipment is not in the repository |
 | NFR-PERF-003 | Receiving then persisting a command: p99 at most 20 ms | The writer, on this host: p99 0.68 ms for a submission and a transition (500 pairs, `powermug-command/tests/writer.rs`) | Measured on the development host only; not a qualification result (decision 2) | The qualification hardware (decision 2) |
 
+Since the grid was written: a single node is the confirmed owner of its partitions at opening (owner's decision, 2026-11-25), so the commands are accepted from the start of the cell. Before, no production path took ownership.
+
 ## Blockers, by owner
 
 | Blocker | Owner | Needed for |
