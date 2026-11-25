@@ -6,6 +6,7 @@
 //! not exist yet (cell health, host statistics, destinations, commands), and they are
 //! not reported rather than estimated.
 
+use std::fmt::Write as _;
 use std::sync::{Mutex, PoisonError};
 
 use crate::lane::Lane;
@@ -53,9 +54,48 @@ impl IndicatorSource for Mutex<Lane> {
                 unit: "boolean",
                 measured_at_ns: now_wall_ns,
             });
+            indicators.push(Indicator {
+                name: "iec104_connection_event_count",
+                scope: "site",
+                session: Some(session.0),
+                value: state.map(|_| f64::from(lane.connection_events(session))),
+                unit: "count",
+                measured_at_ns: now_wall_ns,
+            });
         }
         indicators
     }
+}
+
+/// The indicators as `OpenMetrics` text (gauges, one sample per indicator and session). An
+/// indicator not measured yet is left out rather than estimated. The series depend on the
+/// indicators and the sessions, never on the number of points (PM-IND-001).
+#[must_use]
+pub fn openmetrics(indicators: &[Indicator]) -> String {
+    let mut text = String::new();
+    let mut declared: Vec<&str> = Vec::new();
+    for indicator in indicators {
+        let Some(value) = indicator.value else {
+            continue;
+        };
+        if !declared.contains(&indicator.name) {
+            declared.push(indicator.name);
+            let _ = writeln!(text, "# TYPE {} gauge", indicator.name);
+        }
+        let labels = match indicator.session {
+            Some(session) => format!("scope=\"{}\",session=\"{session}\"", indicator.scope),
+            None => format!("scope=\"{}\"", indicator.scope),
+        };
+        let seconds = indicator.measured_at_ns / 1_000_000_000;
+        let nanos = indicator.measured_at_ns % 1_000_000_000;
+        let _ = writeln!(
+            text,
+            "{}{{{labels}}} {value} {seconds}.{nanos:09}",
+            indicator.name
+        );
+    }
+    text.push_str("# EOF\n");
+    text
 }
 
 /// Seconds from `earlier` to `later`, never negative.

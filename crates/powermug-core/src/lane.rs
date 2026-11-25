@@ -224,6 +224,8 @@ pub struct Lane {
     published: Vec<pb::Envelope>,
     live: crate::ring::LiveRing,
     last_accepted_wall_ns: Option<i64>,
+    /// Changes of the connection state of each session, lost or restored, since the start.
+    connection_events: HashMap<SessionId, u32>,
 }
 
 /// How often a lane takes a snapshot of its image (§7.2, H).
@@ -252,6 +254,7 @@ impl Lane {
             published: Vec::new(),
             live: crate::ring::LiveRing::new(crate::ring::DEFAULT_CAPACITY),
             last_accepted_wall_ns: None,
+            connection_events: HashMap::new(),
         }
     }
 
@@ -531,6 +534,8 @@ impl Lane {
         }
         self.lost.insert(session);
         self.reported.insert(session);
+        let changes = self.connection_events.entry(session).or_insert(0);
+        *changes = changes.saturating_add(1);
         Ok(committed)
     }
 
@@ -566,6 +571,8 @@ impl Lane {
         let committed = self.append(&entries)?;
         self.lost.remove(&session);
         self.reported.insert(session);
+        let changes = self.connection_events.entry(session).or_insert(0);
+        *changes = changes.saturating_add(1);
         Ok(committed)
     }
 
@@ -573,6 +580,12 @@ impl Lane {
     #[must_use]
     pub fn last_accepted_wall_ns(&self) -> Option<i64> {
         self.last_accepted_wall_ns
+    }
+
+    /// The number of changes of the connection state of `session` since the start.
+    #[must_use]
+    pub fn connection_events(&self, session: SessionId) -> u32 {
+        self.connection_events.get(&session).copied().unwrap_or(0)
     }
 
     /// The sessions of the table, each with whether it is up (not lost).

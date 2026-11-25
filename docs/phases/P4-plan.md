@@ -1,6 +1,6 @@
 # Phase P4 — Plan (store-and-forward, Kafka, MQTT 5, indicators)
 
-- **Status:** In progress. Slice 1 (live ring and replay) is done; the other slices wait for the decisions in section 4. P3 is open until the bench.
+- **Status:** In progress. Slice 1 (live ring and replay) is done; slice 4 (indicators) is partly done, the rest waits for a partition label in `indicators.v1` and the route; the other slices wait for the decisions in section 4. P3 is open until the bench.
 - **Date:** 2026-11-25
 - **Plan:** [IMPLEMENTATION.md](../../specifications/IMPLEMENTATION.md) §4 (P4) and the P4 deliverables
 - **Criteria:** `ACC-001`, `ACC-007`, `ACC-015`, `ACC-023` (gridloop), `PM-ACC-010`, `PM-ACC-011` (this repository), and the MVP scenarios S1, S6, S7, S14 to S19 (`PM-ACC-011`)
