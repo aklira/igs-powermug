@@ -1643,6 +1643,7 @@ dependencies = [
  "powermug-contract",
  "powermug-core",
  "powermug-mgmt",
+ "powermug-pivot",
  "powermug-revision",
  "powermug-sandbox",
  "powermug-store",

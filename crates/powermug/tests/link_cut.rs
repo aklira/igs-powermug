@@ -288,6 +288,7 @@ async fn a_link_cut_after_the_execution_left_puts_the_command_in_doubt_and_never
         Policy::default(),
         stopped,
         Some(link),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
     ));
 
     let watched = Arc::clone(&lane);

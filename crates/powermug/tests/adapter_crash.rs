@@ -283,6 +283,7 @@ async fn a_command_in_flight_when_the_adapter_dies_is_in_doubt_and_never_sent_ag
         Policy::default(),
         stopped,
         Some(link),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
     ));
 
     let watched = Arc::clone(&lane);

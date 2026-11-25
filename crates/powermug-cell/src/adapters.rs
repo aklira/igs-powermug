@@ -177,6 +177,7 @@ pub async fn supervise(
     policy: Policy,
     mut stop: watch::Receiver<bool>,
     commands: Option<CommandLink>,
+    restart: Arc<Notify>,
 ) -> Outcome {
     let clock = Clock::new();
     let mut supervisor = Supervisor::new(policy);
@@ -184,14 +185,20 @@ pub async fn supervise(
         if *stop.borrow() || supervisor.started(Instant::now()).is_err() {
             return Outcome::Stopped;
         }
-        let reason = match run_once(&instance, &lane, &clock, &mut stop, commands.as_ref()).await {
+        let reason = match run_once(
+            &instance,
+            &lane,
+            &clock,
+            &mut stop,
+            commands.as_ref(),
+            &restart,
+        )
+        .await
+        {
             Cycle::Stopped => return Outcome::Stopped,
             Cycle::Ended(reason) => reason,
-            Cycle::Reconfigured => {
-                eprintln!(
-                    "adapter of session {}: restarted with a new owner epoch",
-                    instance.session
-                );
+            Cycle::Planned(why) => {
+                eprintln!("adapter of session {}: {why}", instance.session);
                 if supervisor.restart_now().is_err() {
                     return Outcome::Stopped;
                 }
@@ -226,9 +233,12 @@ pub async fn supervise(
 enum Cycle {
     Stopped,
     Ended(String),
-    /// The owner epoch changed while the process ran: a planned restart, not a failure.
-    Reconfigured,
+    /// A planned restart, not a failure: the owner epoch changed, or a local action asked for it.
+    Planned(&'static str),
 }
+
+/// The reason of a planned restart that a local action asked for.
+const RESTART_REQUESTED: &str = "restarted on the request of a local action";
 
 /// Silence after which an instance is dead: three missed reports of one second (§6.3).
 const HEALTH_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
@@ -237,8 +247,8 @@ const HEALTH_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 enum End {
     /// The process exited, or could not be waited for.
     Exited(String),
-    /// The owner epoch changed: the process is replaced with the new epoch.
-    Reconfigured,
+    /// A planned restart: the process is replaced, for a reason that is not a failure.
+    Planned(&'static str),
     /// No health report within the window: the process is killed (§6.3).
     Silent,
     /// The core's server ended before the process did.
@@ -254,6 +264,7 @@ async fn run_once(
     clock: &Clock,
     stop: &mut watch::Receiver<bool>,
     commands: Option<&CommandLink>,
+    restart: &Notify,
 ) -> Cycle {
     let digest = match artifact_sha256(&instance.binary) {
         Ok(digest) => digest,
@@ -342,10 +353,11 @@ async fn run_once(
             }),
             () = heartbeat.notified() => silence.as_mut().reset(tokio::time::Instant::now() + HEALTH_WINDOW),
             () = &mut silence => break End::Silent,
+            () = restart.notified() => break End::Planned(RESTART_REQUESTED),
             _ = epoch_check.tick() => {
                 // A takeover during the cycle: the process is replaced with the new epoch.
                 if activation_epoch_of(commands, &instance.settings.site_id) != settings.owner_epoch {
-                    break End::Reconfigured;
+                    break End::Planned("restarted with a new owner epoch");
                 }
             }
         }
@@ -358,11 +370,17 @@ async fn run_once(
         let _ = server.await;
     }
     release_commands(commands, pump).await;
-    match end {
-        End::Exited(reason) | End::ServerFailed(reason) => Cycle::Ended(reason),
-        End::Silent => Cycle::Ended("no health report for 3 s: the process is killed".into()),
-        End::Reconfigured => Cycle::Reconfigured,
-        End::Stopped => Cycle::Stopped,
+    end.into()
+}
+
+impl From<End> for Cycle {
+    fn from(end: End) -> Self {
+        match end {
+            End::Exited(reason) | End::ServerFailed(reason) => Cycle::Ended(reason),
+            End::Silent => Cycle::Ended("no health report for 3 s: the process is killed".into()),
+            End::Planned(why) => Cycle::Planned(why),
+            End::Stopped => Cycle::Stopped,
+        }
     }
 }
 

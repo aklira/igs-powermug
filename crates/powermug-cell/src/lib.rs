@@ -7,6 +7,7 @@
 //! are started and supervised by the cell (see [`adapters`]); their values reach the lanes
 //! only through the adapter contract.
 
+pub mod actions;
 pub mod adapters;
 pub mod anchor;
 pub mod commands;
@@ -23,7 +24,7 @@ use powermug_revision::profile::powermug_v1;
 use powermug_store::{CriticalStore, GenerationError, GroupJournal, StoreError, Writer};
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
 pub use config::{CellConfig, ConfigError};
 
@@ -201,6 +202,10 @@ pub struct Cell {
     audit: powermug_command::CommandClient,
     /// The commands the restart rules decided when the cell opened, by partition.
     pub recovery: Vec<powermug_command::Recovery>,
+    /// The restart request of each South session: a local action asks its supervisor through it.
+    pub restarts: std::collections::BTreeMap<u32, Arc<Notify>>,
+    /// The site of each lane, in the order of `lanes`.
+    sites: Vec<String>,
 }
 
 impl Cell {
@@ -309,6 +314,11 @@ impl Cell {
             Api::new(critical, powermug_v1(), trusted_key, indicators, commands)
                 .with_commands(Arc::new(commands::Gateway::new(routes))),
         );
+        let restarts = adapters::instances(config)?
+            .iter()
+            .map(|instance| (instance.session, Arc::new(Notify::new())))
+            .collect();
+        let sites = config.lanes.iter().map(|lane| lane.site.clone()).collect();
         Ok(Self {
             api,
             lanes,
@@ -317,7 +327,21 @@ impl Cell {
             commands: command_writer,
             audit,
             recovery,
+            restarts,
+            sites,
         })
+    }
+
+    /// The host of the local actions, which shed the lanes of a site for `shed_window`.
+    #[must_use]
+    pub fn action_host(&self, shed_window: std::time::Duration) -> actions::CellHost {
+        let lanes = self
+            .sites
+            .iter()
+            .cloned()
+            .zip(self.lanes.iter().cloned())
+            .collect();
+        actions::CellHost::new(self.restarts.clone(), lanes, shed_window)
     }
 
     /// A journal client for anchoring the audit head. It must be dropped before the cell closes.
@@ -336,6 +360,8 @@ impl Cell {
             commands,
             audit,
             recovery: _,
+            restarts: _,
+            sites: _,
         } = self;
         drop(api);
         drop(lanes);
@@ -424,12 +450,17 @@ pub async fn serve(
         .map(|instance| {
             let lane = Arc::clone(&cell.lanes[instance.lane]);
             let commands = cell.commands_by_session.get(&instance.session).cloned();
+            let restart = cell
+                .restarts
+                .get(&instance.session)
+                .map_or_else(|| Arc::new(Notify::new()), Arc::clone);
             tokio::spawn(adapters::supervise(
                 instance,
                 lane,
                 Policy::default(),
                 stopped.clone(),
                 commands,
+                restart,
             ))
         })
         .collect();
