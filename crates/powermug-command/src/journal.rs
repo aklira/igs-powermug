@@ -824,6 +824,25 @@ impl CommandJournal {
         })
     }
 
+    /// Appends an event of the cell to the audit chain: a local action, for example. `kind` names
+    /// the event, `subject` what it concerns, and `payload` its detail.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::Database`] when the write fails; nothing is recorded then.
+    pub fn audit_event(
+        &mut self,
+        kind: &str,
+        subject: &str,
+        payload: &str,
+        at_ns: i64,
+    ) -> Result<(), CommandError> {
+        let tx = self.conn.transaction()?;
+        audit::append(&tx, kind, subject, payload, at_ns)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// The hash of the last audit record, to anchor outside the store.
     ///
     /// # Errors

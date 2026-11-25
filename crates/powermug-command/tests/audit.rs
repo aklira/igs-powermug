@@ -210,3 +210,22 @@ fn an_empty_export_verifies_against_the_genesis() {
     assert_eq!(records.len(), 0);
     assert_eq!(verify_export(&records, Some(GENESIS)), Ok(0));
 }
+
+#[test]
+fn an_event_of_the_cell_joins_the_chain_and_the_chain_still_verifies() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut journal = CommandJournal::open(journal_path(&dir)).expect("opens");
+    let before = journal.verify_audit().expect("verifies");
+    journal
+        .audit_event("action.requested", "a1", "alert", T0)
+        .expect("records");
+    assert_eq!(journal.verify_audit(), Ok(before + 1));
+    assert_eq!(
+        journal
+            .export_audit()
+            .expect("exports")
+            .last()
+            .map(|r| r.kind.as_str()),
+        Some("action.requested")
+    );
+}

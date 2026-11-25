@@ -4,7 +4,26 @@
 
 use std::collections::BTreeMap;
 
-use powermug_core::actions::{Action, ActionHost, Budget, Executor, Outcome, Request};
+use powermug_core::actions::{
+    Action, ActionHost, AuditSink, Budget, Executor, Outcome, Record, Request,
+};
+
+/// Keeps the records it is given; refuses all of them when `fail` is set.
+#[derive(Default)]
+struct Sink {
+    records: Vec<(String, Record)>,
+    fail: bool,
+}
+
+impl AuditSink for Sink {
+    fn record(&mut self, kind: &str, record: &Record) -> Result<(), String> {
+        if self.fail {
+            return Err("the chain is not writable".into());
+        }
+        self.records.push((kind.to_owned(), record.clone()));
+        Ok(())
+    }
+}
 
 /// Records what it was asked to run.
 #[derive(Default)]
@@ -62,8 +81,9 @@ fn request(id: &str, action: &str) -> Request {
 #[test]
 fn a_name_outside_the_catalogue_is_refused_without_running_anything() {
     let mut host = Host::default();
+    let mut sink = Sink::default();
     let mut executor = executor(3);
-    let outcome = executor.execute(&mut host, &request("a1", "change_acl"), 1);
+    let outcome = executor.execute(&mut host, &mut sink, &request("a1", "change_acl"), 1);
     assert!(matches!(outcome, Outcome::Refused(_)));
     assert_eq!(host.runs.len(), 0);
     assert_eq!(executor.audit().len(), 1, "the refusal is audited");
@@ -101,8 +121,9 @@ fn the_catalogue_names_are_the_specified_ones_and_nothing_touches_the_control_pl
 #[test]
 fn an_action_not_run_by_this_cell_yet_is_refused() {
     let mut host = Host::default();
+    let mut sink = Sink::default();
     let mut executor = executor(3);
-    let outcome = executor.execute(&mut host, &request("a1", "purge_tmp"), 1);
+    let outcome = executor.execute(&mut host, &mut sink, &request("a1", "purge_tmp"), 1);
     assert!(matches!(outcome, Outcome::Refused(_)));
     assert_eq!(host.runs.len(), 0);
 }
@@ -110,13 +131,14 @@ fn an_action_not_run_by_this_cell_yet_is_refused() {
 #[test]
 fn an_action_id_runs_once_however_often_it_is_sent() {
     let mut host = Host::default();
+    let mut sink = Sink::default();
     let mut executor = executor(3);
     assert_eq!(
-        executor.execute(&mut host, &request("a1", "alert"), 1),
+        executor.execute(&mut host, &mut sink, &request("a1", "alert"), 1),
         Outcome::Done
     );
     assert_eq!(
-        executor.execute(&mut host, &request("a1", "alert"), 2),
+        executor.execute(&mut host, &mut sink, &request("a1", "alert"), 2),
         Outcome::Duplicate
     );
     assert_eq!(host.runs.len(), 1);
@@ -125,23 +147,29 @@ fn an_action_id_runs_once_however_often_it_is_sent() {
 #[test]
 fn an_action_stops_at_its_budget_and_runs_again_after_the_window() {
     let mut host = Host::default();
+    let mut sink = Sink::default();
     let mut executor = executor(2);
     let minute = 60 * 1_000_000_000_i64;
     assert_eq!(
-        executor.execute(&mut host, &request("r1", "restart_adapter"), 0),
+        executor.execute(&mut host, &mut sink, &request("r1", "restart_adapter"), 0),
         Outcome::Done
     );
     assert_eq!(
-        executor.execute(&mut host, &request("r2", "restart_adapter"), 1),
+        executor.execute(&mut host, &mut sink, &request("r2", "restart_adapter"), 1),
         Outcome::Done
     );
     assert!(matches!(
-        executor.execute(&mut host, &request("r3", "restart_adapter"), 2),
+        executor.execute(&mut host, &mut sink, &request("r3", "restart_adapter"), 2),
         Outcome::Refused(_)
     ));
     assert_eq!(host.runs.len(), 2, "the third is not run");
     assert_eq!(
-        executor.execute(&mut host, &request("r4", "restart_adapter"), minute + 5),
+        executor.execute(
+            &mut host,
+            &mut sink,
+            &request("r4", "restart_adapter"),
+            minute + 5
+        ),
         Outcome::Done,
         "the window has passed"
     );
@@ -153,8 +181,14 @@ fn a_failed_run_is_refused_with_its_reason_and_audited_with_its_trigger() {
         fail: true,
         ..Host::default()
     };
+    let mut sink = Sink::default();
     let mut executor = executor(3);
-    let outcome = executor.execute(&mut host, &request("g1", "general_interrogation"), 7);
+    let outcome = executor.execute(
+        &mut host,
+        &mut sink,
+        &request("g1", "general_interrogation"),
+        7,
+    );
     assert_eq!(
         outcome,
         Outcome::Refused("the adapter is not reachable".into())
@@ -168,8 +202,41 @@ fn a_failed_run_is_refused_with_its_reason_and_audited_with_its_trigger() {
 #[test]
 fn an_action_without_a_budget_is_not_run() {
     let mut host = Host::default();
+    let mut sink = Sink::default();
     let mut executor = executor(3);
-    let outcome = executor.execute(&mut host, &request("s1", "shed_class_c"), 1);
+    let outcome = executor.execute(&mut host, &mut sink, &request("s1", "shed_class_c"), 1);
     assert!(matches!(outcome, Outcome::Refused(_)));
     assert_eq!(host.runs.len(), 0, "no bound, no run (PM8)");
+}
+
+#[test]
+fn a_request_that_is_not_audited_runs_nothing_and_can_be_sent_again() {
+    let mut host = Host::default();
+    let mut failing = Sink {
+        fail: true,
+        ..Sink::default()
+    };
+    let mut executor = executor(3);
+    let outcome = executor.execute(&mut host, &mut failing, &request("n1", "alert"), 1);
+    assert!(matches!(outcome, Outcome::Refused(_)));
+    assert_eq!(host.runs.len(), 0, "nothing runs without its record");
+
+    let mut sink = Sink::default();
+    assert_eq!(
+        executor.execute(&mut host, &mut sink, &request("n1", "alert"), 2),
+        Outcome::Done,
+        "the same request runs once it can be recorded"
+    );
+}
+
+#[test]
+fn every_request_is_recorded_as_received_then_with_its_outcome() {
+    let mut host = Host::default();
+    let mut sink = Sink::default();
+    let mut executor = executor(3);
+    executor.execute(&mut host, &mut sink, &request("e1", "alert"), 5);
+    let kinds: Vec<&str> = sink.records.iter().map(|(kind, _)| kind.as_str()).collect();
+    assert_eq!(kinds, ["action.requested", "action.finished"]);
+    assert_eq!(sink.records[0].1.outcome, None);
+    assert_eq!(sink.records[1].1.outcome, Some(Outcome::Done));
 }

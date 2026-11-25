@@ -46,6 +46,13 @@ enum Request {
     CloseNotSent(String, i64, String, Sender<Result<State, CommandError>>),
     CloseUnknown(String, i64, String, Sender<Result<State, CommandError>>),
     SetMode(Mode, String, i64, Sender<Result<bool, CommandError>>),
+    AuditEvent(
+        String,
+        String,
+        String,
+        i64,
+        Sender<Result<(), CommandError>>,
+    ),
 }
 
 /// The handle used to send requests to the writer. Cloneable; every clone talks to the same
@@ -115,6 +122,9 @@ impl CommandWriter {
                     }
                     Request::CloseUnknown(id, at, reason, reply) => {
                         let _ = reply.send(journal.close_intent_unknown(&id, at, &reason));
+                    }
+                    Request::AuditEvent(kind, subject, payload, at, reply) => {
+                        let _ = reply.send(journal.audit_event(&kind, &subject, &payload, at));
                     }
                     Request::SetMode(mode, actor, at, reply) => {
                         let _ = reply.send(journal.set_mode(mode, &actor, at));
@@ -274,6 +284,29 @@ impl CommandClient {
     /// Returns the journal's error, or [`CommandError::WriterStopped`].
     pub fn set_mode(&self, mode: Mode, actor: &str, at_ns: i64) -> Result<bool, CommandError> {
         self.call(|reply| Request::SetMode(mode, actor.to_owned(), at_ns, reply))
+    }
+
+    /// See [`CommandJournal::audit_event`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal's error, or [`CommandError::WriterStopped`].
+    pub fn audit_event(
+        &self,
+        kind: &str,
+        subject: &str,
+        payload: &str,
+        at_ns: i64,
+    ) -> Result<(), CommandError> {
+        self.call(|reply| {
+            Request::AuditEvent(
+                kind.to_owned(),
+                subject.to_owned(),
+                payload.to_owned(),
+                at_ns,
+                reply,
+            )
+        })
     }
 
     /// See [`CommandJournal::close_intent_not_sent`].

@@ -91,14 +91,26 @@ pub enum Outcome {
     Duplicate,
 }
 
-/// One audited request: its action, its trigger (an indicator, or a signed request), and its outcome.
+/// One audited request: its action, its trigger (an indicator, or a signed request), and its
+/// outcome once it is known (`None` while the request is only recorded as received).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub action_id: String,
     pub action: String,
     pub trigger: String,
-    pub outcome: Outcome,
+    pub outcome: Option<Outcome>,
     pub at_ns: i64,
+}
+
+/// Where the audit of the actions is written (PM-ACT-003): the audit chain of the cell, in
+/// practice.
+pub trait AuditSink {
+    /// Writes one record under `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason when the record cannot be written.
+    fn record(&mut self, kind: &str, record: &Record) -> Result<(), String>;
 }
 
 /// A request to run an action.
@@ -135,25 +147,36 @@ impl Executor {
         }
     }
 
-    /// Handles one request. Every handled request is audited.
+    /// Handles one request. The request is recorded before anything runs: when that record cannot be
+    /// written, nothing runs and the request can be sent again. The outcome is recorded after.
     pub fn execute(
         &mut self,
         host: &mut dyn ActionHost,
+        sink: &mut dyn AuditSink,
         request: &Request,
         now_ns: i64,
     ) -> Outcome {
         if self.handled.contains(&request.action_id) {
             return Outcome::Duplicate;
         }
-        let outcome = self.decide(host, request, now_ns);
-        self.handled.insert(request.action_id.clone());
-        self.audit.push(Record {
+        let mut record = Record {
             action_id: request.action_id.clone(),
             action: request.action.clone(),
             trigger: request.trigger.clone(),
-            outcome: outcome.clone(),
+            outcome: None,
             at_ns: now_ns,
-        });
+        };
+        if let Err(reason) = sink.record("action.requested", &record) {
+            return Outcome::Refused(format!(
+                "the request is not audited, nothing runs: {reason}"
+            ));
+        }
+        let outcome = self.decide(host, request, now_ns);
+        self.handled.insert(request.action_id.clone());
+        record.outcome = Some(outcome.clone());
+        // The action has run: a failure to record its outcome is kept in the in-memory audit.
+        let _ = sink.record("action.finished", &record);
+        self.audit.push(record);
         outcome
     }
 
