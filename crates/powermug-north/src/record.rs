@@ -1,9 +1,9 @@
-//! The mapping of a delivered envelope to a Kafka record (SPECIFICATIONS 7.4, FUN-SAF-003).
+//! The mapping of a delivered envelope to a North record (SPECIFICATIONS 7.4, FUN-SAF-003).
 //!
 //! The payload is the envelope in Protobuf, as the journal holds it. The key is the point, so the
-//! events of one point stay in order within a partition. The headers carry what a consumer needs to
-//! recognise a duplicate (`event_id`, which is unique per event) and to tell a replay from a live
-//! value.
+//! events of one point stay in order. The headers carry what a consumer needs to recognise a
+//! duplicate (`event_id`, unique per event) and to tell a replay from a live value. Each protocol
+//! carries them in its own way: Kafka as record headers, MQTT 5 as user properties.
 
 use std::fmt::Write;
 
@@ -17,7 +17,7 @@ pub const MAPPING_REVISION: &str = "powermug.mapping_revision";
 /// `true` for an event replayed from the journal, `false` for a live one.
 pub const REPLAY: &str = "powermug.replay";
 
-/// One record of a Kafka topic, before it is sent.
+/// One record of a North destination, before it is sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub key: String,

@@ -2,8 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
+use powermug_north::Subscription;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::PROTOCOL;
 
 /// What the producer needs to serve one flux destination.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +36,17 @@ pub enum SettingsError {
 }
 
 impl Settings {
+    /// The subscription the producer makes to the core, from these settings.
+    #[must_use]
+    pub fn subscription(&self) -> Subscription {
+        Subscription {
+            core_socket: self.core_socket.clone(),
+            destination: self.destination.clone(),
+            protocol: PROTOCOL,
+            artifact_sha256: self.artifact_sha256.clone(),
+        }
+    }
+
     /// Reads and checks the settings file.
     ///
     /// # Errors

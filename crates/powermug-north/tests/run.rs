@@ -8,10 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use powermug_adapter_kafka::record::EVENT_ID;
-use powermug_adapter_kafka::{
-    offer, run, DeliveryError, Record, RecordSink, RetryPolicy, RunError, Settings,
-};
 use powermug_contract::peer::ExpectedPeer;
 use powermug_contract::proto::v1 as pb;
 use powermug_contract::server::serve_instance;
@@ -19,6 +15,10 @@ use powermug_contract::service::CoreConfig;
 use powermug_contract::sink::BatchSink;
 use powermug_core::lane::{Lane, PointSpec, PointTable, SessionId};
 use powermug_core::{Clock, LaneSink};
+use powermug_north::record::EVENT_ID;
+use powermug_north::{
+    offer, run, DeliveryError, Record, RecordSink, RetryPolicy, RunError, Subscription,
+};
 use powermug_pivot::proto::v1 as pivot;
 use powermug_store::{EventClass, Start, TelemetryLog};
 use prost::Message;
@@ -59,18 +59,15 @@ fn sequence_of(envelope: &pivot::Envelope) -> u64 {
 }
 
 fn capabilities_of(destination: &str) -> pb::Capabilities {
-    // The producer announces itself through `capabilities` in the crate; the core only needs the
-    // destination here, so the test core takes the producer's own declaration.
-    let settings = settings(Path::new("/unused"), destination);
-    powermug_adapter_kafka::capabilities(&settings)
+    powermug_north::capabilities(&subscription(Path::new("/unused"), destination))
 }
 
-fn settings(socket: &Path, destination: &str) -> Settings {
-    Settings {
+/// The subscription of the test producer. The core offers the same protocol.
+fn subscription(socket: &Path, destination: &str) -> Subscription {
+    Subscription {
         core_socket: socket.to_path_buf(),
         destination: destination.into(),
-        brokers: "not-used:9092".into(),
-        topic: "powermug.test".into(),
+        protocol: "test",
         artifact_sha256: "ab".repeat(32),
     }
 }
@@ -139,9 +136,9 @@ fn core(declare: bool) -> Core {
     }
 }
 
-/// The core's offer is the one the cell makes to a North Kafka instance.
+/// The core's offer for the test producer.
 fn offer_of_core() -> powermug_contract::handshake::Offer {
-    offer()
+    offer(&subscription(Path::new("/unused"), DESTINATION))
 }
 
 impl Core {
@@ -186,7 +183,7 @@ impl RecordSink for FakeBroker {
         seen.attempts += 1;
         let outcome = if self.refusals > 0 {
             self.refusals -= 1;
-            Err(DeliveryError::Produce("the broker is busy".into()))
+            Err(DeliveryError::Refused("the broker is busy".into()))
         } else {
             seen.records.extend_from_slice(records);
             Ok(())
@@ -253,7 +250,7 @@ async fn every_event_is_produced_in_order_and_acknowledged_so_the_cursor_follows
         refusals: 0,
     };
     let report = run(
-        &settings(&core.socket, DESTINATION),
+        &subscription(&core.socket, DESTINATION),
         &mut broker,
         RetryPolicy::default(),
         until_delivered(Arc::clone(&seen), 150),
@@ -310,7 +307,7 @@ async fn a_refused_batch_is_delivered_again_and_acknowledged_once() {
         max_delay: Duration::from_millis(2),
     };
     let report = run(
-        &settings(&core.socket, DESTINATION),
+        &subscription(&core.socket, DESTINATION),
         &mut broker,
         policy,
         until_delivered(Arc::clone(&seen), 10),
@@ -347,7 +344,7 @@ async fn a_batch_that_keeps_failing_stops_the_producer_and_is_never_acknowledged
         max_delay: Duration::from_millis(2),
     };
     let result = run(
-        &settings(&core.socket, DESTINATION),
+        &subscription(&core.socket, DESTINATION),
         &mut broker,
         policy,
         std::future::pending::<()>(),
@@ -378,7 +375,7 @@ async fn an_undeclared_destination_is_refused_by_the_core() {
         refusals: 0,
     };
     let result = run(
-        &settings(&core.socket, DESTINATION),
+        &subscription(&core.socket, DESTINATION),
         &mut broker,
         RetryPolicy::default(),
         std::future::pending::<()>(),
@@ -396,6 +393,6 @@ async fn an_undeclared_destination_is_refused_by_the_core() {
 fn the_declared_capabilities_name_the_destination_and_the_protocol() {
     let capabilities = capabilities_of(DESTINATION);
     assert_eq!(capabilities.destination, DESTINATION);
-    assert_eq!(capabilities.protocols[0].name, "kafka");
+    assert_eq!(capabilities.protocols[0].name, "test");
     assert_eq!(capabilities.protocols[0].functions, vec!["publish_events"]);
 }

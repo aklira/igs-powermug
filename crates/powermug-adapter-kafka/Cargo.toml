@@ -18,9 +18,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
-powermug-contract = { path = "../powermug-contract" }
-powermug-pivot = { path = "../powermug-pivot" }
-prost = "0.14"
+powermug-north = { path = "../powermug-north" }
 rdkafka = { version = "=0.40.0", default-features = false, features = ["libz", "tokio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -28,7 +26,10 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
+powermug-contract = { path = "../powermug-contract" }
 powermug-core = { path = "../powermug-core" }
+powermug-pivot = { path = "../powermug-pivot" }
 powermug-store = { path = "../powermug-store" }
+prost = "0.14"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "net", "sync", "time"] }

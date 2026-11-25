@@ -1,19 +1,17 @@
-//! North Kafka producer of Powermug (SPECIFICATIONS 7.4, FUN-SAF-002 to 005, ADR-18).
+//! North Kafka producer of Powermug (SPECIFICATIONS 7.4, ADR-18).
 //!
-//! The producer is a separate executable, because librdkafka is C code: it is the subscriber of a
-//! flux destination of the core. It produces each delivered batch to a topic, and acknowledges the
-//! batch once the broker has acknowledged every record. The core moves the destination's cursor only
-//! over acknowledged batches, so a producer that stops resumes where the broker last confirmed it.
+//! The producer is a separate executable, because librdkafka is C code. The subscription, the delivery
+//! loop and the record mapping are in `powermug-north`; this crate holds the Kafka sink and its
+//! settings.
 
-pub mod record;
-pub mod run;
 pub mod settings;
 pub mod sink;
 
-pub use record::{record_of, Record};
-pub use run::{capabilities, offer, run, Report, RetryPolicy, RunError};
 pub use settings::{Settings, SettingsError};
-pub use sink::{DeliveryError, KafkaSink, RecordSink};
+pub use sink::KafkaSink;
+
+/// The protocol the producer declares to the core.
+pub const PROTOCOL: &str = "kafka";
 
 /// The producer could not start or stop cleanly.
 #[derive(Debug, thiserror::Error)]
@@ -23,7 +21,7 @@ pub enum ProducerError {
     #[error("the Kafka producer cannot be created: {0}")]
     Kafka(#[from] rdkafka::error::KafkaError),
     #[error(transparent)]
-    Run(#[from] RunError),
+    Run(#[from] powermug_north::RunError),
     #[error("the runtime cannot be started: {0}")]
     Runtime(#[from] std::io::Error),
 }

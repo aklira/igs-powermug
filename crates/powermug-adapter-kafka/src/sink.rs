@@ -10,33 +10,11 @@ use rdkafka::error::KafkaError;
 use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
-use thiserror::Error;
 
-use crate::record::Record;
+use powermug_north::{DeliveryError, Record, RecordSink};
 
 /// How long one record may wait for the broker before it is reported as not delivered.
 pub const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// A batch was not delivered to the sink.
-#[derive(Debug, Error)]
-pub enum DeliveryError {
-    #[error("the broker did not acknowledge a record: {0}")]
-    Produce(String),
-}
-
-/// Where the records of a batch go.
-pub trait RecordSink {
-    /// Delivers `records`. Returns `Ok` only when every record is acknowledged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DeliveryError`] when a record is not acknowledged; the batch is then delivered
-    /// again, so a record may reach the topic twice, and its `event_id` tells the copies apart.
-    fn deliver<'a>(
-        &'a mut self,
-        records: &'a [Record],
-    ) -> impl Future<Output = Result<(), DeliveryError>> + Send + 'a;
-}
 
 /// The sink of a Kafka topic.
 pub struct KafkaSink {
@@ -104,7 +82,7 @@ impl RecordSink for KafkaSink {
             });
             try_join_all(sends)
                 .await
-                .map_err(|(err, _)| DeliveryError::Produce(err.to_string()))?;
+                .map_err(|(err, _)| DeliveryError::Refused(err.to_string()))?;
             Ok(())
         }
     }

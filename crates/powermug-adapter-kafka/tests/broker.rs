@@ -11,7 +11,6 @@ use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use powermug_adapter_kafka::record::{EVENT_ID, REPLAY};
 use powermug_adapter_kafka::Settings;
 use powermug_contract::peer::ExpectedPeer;
 use powermug_contract::proto::v1 as pb;
@@ -20,6 +19,7 @@ use powermug_contract::service::CoreConfig;
 use powermug_contract::sink::BatchSink;
 use powermug_core::lane::{Lane, PointSpec, PointTable, SessionId};
 use powermug_core::{Clock, LaneSink};
+use powermug_north::record::{EVENT_ID, REPLAY};
 use powermug_pivot::proto::v1 as pivot;
 use powermug_store::{EventClass, Start, TelemetryLog};
 use prost::Message;
@@ -243,7 +243,7 @@ async fn the_events_reach_the_topic_in_order_and_the_cursor_follows_the_broker()
     let mut producer = start_producer(dir.path(), &settings);
     let uid = std::fs::metadata(dir.path()).expect("metadata").uid();
     let config = CoreConfig {
-        offer: powermug_adapter_kafka::offer(),
+        offer: powermug_north::offer(&settings.subscription()),
         expected_peer: ExpectedPeer {
             uid,
             pid: i32::try_from(producer.id()).expect("pid fits i32"),

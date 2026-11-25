@@ -1,0 +1,34 @@
+[package]
+name = "powermug-adapter-mqtt"
+description = "North MQTT 5 client of Powermug: a flux destination of the core, published to an MQTT 5 broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "powermug-mqtt-client"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+powermug-north = { path = "../powermug-north" }
+rumqttc = { version = "=0.25.1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+powermug-contract = { path = "../powermug-contract" }
+powermug-core = { path = "../powermug-core" }
+powermug-pivot = { path = "../powermug-pivot" }
+powermug-store = { path = "../powermug-store" }
+prost = "0.14"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "net", "sync", "time"] }

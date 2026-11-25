@@ -1,11 +1,12 @@
 //! `powermug-kafka-producer --settings <file>`: the North Kafka instance of the cell. The cell writes
 //! the settings file, then starts the producer under the spawner, as it starts the South adapters.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use powermug_adapter_kafka::{run, KafkaSink, ProducerError, RetryPolicy, Settings};
+use powermug_adapter_kafka::{KafkaSink, ProducerError, Settings};
+use powermug_north::{run, Report, RetryPolicy};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,9 +34,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn execute(
-    settings_path: &std::path::Path,
-) -> Result<powermug_adapter_kafka::Report, ProducerError> {
+fn execute(settings_path: &Path) -> Result<Report, ProducerError> {
     let settings = Settings::load(settings_path)?;
     let mut sink = KafkaSink::new(&settings.brokers, &settings.topic)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -43,7 +42,7 @@ fn execute(
         .build()?;
     // The producer runs until the core ends its stream, or until a batch cannot be delivered.
     let report = runtime.block_on(run(
-        &settings,
+        &settings.subscription(),
         &mut sink,
         RetryPolicy::default(),
         std::future::pending::<()>(),
