@@ -678,6 +678,15 @@ impl Lane {
         Ok(shed_c)
     }
 
+    /// The site of the points attached to `session`, if the table has any.
+    #[must_use]
+    pub fn site_name(&self, session: SessionId) -> Option<String> {
+        self.table
+            .iter()
+            .find(|(_, spec)| spec.session == Some(session))
+            .map(|(_, spec)| spec.site_id.clone())
+    }
+
     /// The number of changes of the connection state of `session` since the start.
     #[must_use]
     pub fn connection_events(&self, session: SessionId) -> u32 {

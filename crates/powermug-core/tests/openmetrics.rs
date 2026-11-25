@@ -80,8 +80,10 @@ fn the_text_names_each_indicator_once_with_its_session_and_ends_with_eof() {
             .count(),
         1
     );
-    assert!(text.contains("iec104_connection_event_count{scope=\"site\",session=\"1\"} 1 "));
-    assert!(text.contains("iec104_connection_up{scope=\"site\",session=\"1\"} 0 "));
+    assert!(
+        text.contains("iec104_connection_event_count{scope=\"site\",site=\"S3\",session=\"1\"} 1 ")
+    );
+    assert!(text.contains("iec104_connection_up{scope=\"site\",site=\"S3\",session=\"1\"} 0 "));
     assert!(text.ends_with("# EOF\n"));
 }
 

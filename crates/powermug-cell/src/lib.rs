@@ -87,14 +87,35 @@ fn check_volumes(config: &CellConfig) -> Result<(), CellError> {
 #[derive(Debug)]
 pub struct CellIndicators {
     lanes: Vec<Arc<Mutex<Lane>>>,
+    commands: powermug_command::CommandClient,
+    sites: Vec<String>,
 }
 
 impl IndicatorSource for CellIndicators {
     fn sample(&self, now_wall_ns: i64) -> Vec<Indicator> {
-        self.lanes
+        let mut indicators: Vec<Indicator> = self
+            .lanes
             .iter()
             .flat_map(|lane| lane.sample(now_wall_ns))
-            .collect()
+            .collect();
+        // The commands in doubt, per site: the journal answers for each site it holds.
+        for site in &self.sites {
+            let value = self
+                .commands
+                .count_in_doubt(site)
+                .ok()
+                .map(|count| f64::from(u32::try_from(count).unwrap_or(u32::MAX)));
+            indicators.push(Indicator {
+                name: "command_in_doubt_count",
+                scope: "site",
+                site: Some(site.clone()),
+                session: None,
+                value,
+                unit: "count",
+                measured_at_ns: now_wall_ns,
+            });
+        }
+        indicators
     }
 }
 
@@ -136,13 +157,17 @@ impl Cell {
         }
         drop(journal);
         let critical = CriticalStore::open(&config.critical_db)?;
-        let indicators: Arc<dyn IndicatorSource> = Arc::new(CellIndicators {
-            lanes: lanes.clone(),
-        });
         // The command journal lives in the critical store's file, on its own connection.
         let (commands, command_writer) =
             powermug_command::CommandWriter::spawn(&config.critical_db)?;
         let audit = commands.clone();
+        let mut sites: Vec<String> = config.lanes.iter().map(|lane| lane.site.clone()).collect();
+        sites.dedup();
+        let indicators: Arc<dyn IndicatorSource> = Arc::new(CellIndicators {
+            lanes: lanes.clone(),
+            commands: commands.clone(),
+            sites,
+        });
         // Each session's dispatcher has the empty ACL and no owner: until the configuration
         // grants a command and the partition has an owner, every command is refused. Its
         // commands must cite the partition's active revision, read from the critical store.

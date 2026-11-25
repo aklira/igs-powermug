@@ -227,6 +227,7 @@ async fn indicators(State(api): State<Arc<Api>>) -> Json<Value> {
             json!({
                 "name": indicator.name,
                 "scope": indicator.scope,
+                "site": indicator.site,
                 "session": indicator.session,
                 "value": indicator.value,
                 "unit": indicator.unit,

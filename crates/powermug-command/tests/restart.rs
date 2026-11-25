@@ -128,3 +128,20 @@ fn an_execution_confirmed_but_not_terminated_is_in_doubt_at_restart() {
     assert_eq!(recovered[0].action, Action::Nothing);
     assert_eq!(journal.state("c1").expect("reads"), Some(State::InDoubt));
 }
+
+#[test]
+fn the_commands_in_doubt_are_counted_per_site_by_prefix() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut journal = CommandJournal::open(dir.path().join("critical.db")).expect("opens");
+    ready(&mut journal, "s3", "S3/TC_101");
+    ready(&mut journal, "s30", "S30/TC_301");
+    ready(&mut journal, "s4", "S4/TC_201");
+    for id in ["s3", "s30"] {
+        journal
+            .move_to(id, State::InDoubt, T0, "lost")
+            .expect("in doubt");
+    }
+    assert_eq!(journal.count_in_doubt("S3").expect("counts"), 1);
+    assert_eq!(journal.count_in_doubt("S30").expect("counts"), 1);
+    assert_eq!(journal.count_in_doubt("S4").expect("counts"), 0);
+}

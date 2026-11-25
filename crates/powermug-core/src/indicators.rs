@@ -16,6 +16,8 @@ use crate::lane::Lane;
 pub struct Indicator {
     pub name: &'static str,
     pub scope: &'static str,
+    /// The site the indicator is about, for an indicator of scope `site`.
+    pub site: Option<String>,
     /// The South session, for an indicator of scope `site`.
     pub session: Option<u32>,
     /// `None` when the value cannot be measured yet (no event accepted so far).
@@ -37,6 +39,7 @@ impl IndicatorSource for Mutex<Lane> {
         let mut indicators = vec![Indicator {
             name: "telemetry_last_seen_seconds",
             scope: "target",
+            site: None,
             session: None,
             value: lane
                 .last_accepted_wall_ns()
@@ -49,6 +52,7 @@ impl IndicatorSource for Mutex<Lane> {
             indicators.push(Indicator {
                 name: "iec104_connection_up",
                 scope: "site",
+                site: lane.site_name(session),
                 session: Some(session.0),
                 value: state.map(|up| if up { 1.0 } else { 0.0 }),
                 unit: "boolean",
@@ -57,6 +61,7 @@ impl IndicatorSource for Mutex<Lane> {
             indicators.push(Indicator {
                 name: "iec104_connection_event_count",
                 scope: "site",
+                site: lane.site_name(session),
                 session: Some(session.0),
                 value: state.map(|_| f64::from(lane.connection_events(session))),
                 unit: "count",
@@ -82,10 +87,13 @@ pub fn openmetrics(indicators: &[Indicator]) -> String {
             declared.push(indicator.name);
             let _ = writeln!(text, "# TYPE {} gauge", indicator.name);
         }
-        let labels = match indicator.session {
-            Some(session) => format!("scope=\"{}\",session=\"{session}\"", indicator.scope),
-            None => format!("scope=\"{}\"", indicator.scope),
-        };
+        let mut labels = format!("scope=\"{}\"", indicator.scope);
+        if let Some(site) = &indicator.site {
+            let _ = write!(labels, ",site=\"{site}\"");
+        }
+        if let Some(session) = indicator.session {
+            let _ = write!(labels, ",session=\"{session}\"");
+        }
         let seconds = indicator.measured_at_ns / 1_000_000_000;
         let nanos = indicator.measured_at_ns % 1_000_000_000;
         let _ = writeln!(

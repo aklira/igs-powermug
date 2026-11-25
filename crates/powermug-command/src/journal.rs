@@ -824,6 +824,21 @@ impl CommandJournal {
         })
     }
 
+    /// The number of commands in doubt of `site` (their points are prefixed by the site).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError::Database`] on a read failure.
+    pub fn count_in_doubt(&self, site: &str) -> Result<u64, CommandError> {
+        let prefix = format!("{site}/");
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM commands WHERE state = 'IN_DOUBT' AND substr(point, 1, length(?1)) = ?1",
+            params![prefix],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
     /// Appends an event of the cell to the audit chain: a local action, for example. `kind` names
     /// the event, `subject` what it concerns, and `payload` its detail.
     ///
