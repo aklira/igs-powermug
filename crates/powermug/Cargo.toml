@@ -31,6 +31,7 @@ tokio = { version = "1", features = ["net", "rt", "time"] }
 igs-iec104 = { version = "0.1.0", default-features = false }
 igs-iec104-codec = "0.1.0"
 powermug-cell = { path = "../powermug-cell" }
+powermug-contract = { path = "../powermug-contract" }
 powermug-core = { path = "../powermug-core" }
 powermug-pivot = { path = "../powermug-pivot" }
 powermug-store = { path = "../powermug-store" }

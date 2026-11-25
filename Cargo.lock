@@ -1490,6 +1490,7 @@ dependencies = [
  "powermug-adapter-iec104",
  "powermug-cell",
  "powermug-command",
+ "powermug-contract",
  "powermug-core",
  "powermug-pivot",
  "powermug-revision",
