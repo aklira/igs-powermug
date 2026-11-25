@@ -93,6 +93,7 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/capabilities", get(capabilities))
         .route("/state", get(state))
         .route("/indicators", get(indicators))
+        .route("/metrics", get(metrics))
         .route("/revisions/prepare", post(prepare))
         .route("/revisions/activate", post(activate))
         .route("/revisions/rollback", post(rollback))
@@ -214,6 +215,24 @@ async fn capabilities(State(api): State<Arc<Api>>) -> Json<Value> {
 pub const IMPLEMENTED: &[&str] = &["south.iec104", "target.state.rest", "target.revision.rest"];
 
 /// The neutral indicators of §11.3, measured at the time of the request.
+/// The indicators as `OpenMetrics` text (SPECIFICATIONS 11.3): bounded series, one per indicator
+/// and session, never per point (PM-IND-001).
+async fn metrics(State(api): State<Arc<Api>>) -> Response {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let now_ns = i64::try_from(now.as_nanos()).unwrap_or(i64::MAX);
+    let text = powermug_core::indicators::openmetrics(&api.indicators.sample(now_ns));
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/openmetrics-text; version=1.0.0; charset=utf-8",
+        )],
+        text,
+    )
+        .into_response()
+}
+
 async fn indicators(State(api): State<Arc<Api>>) -> Json<Value> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
