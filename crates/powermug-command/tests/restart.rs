@@ -104,3 +104,27 @@ fn the_writer_recovers_a_partition_as_the_journal_does() {
     drop(client);
     writer.join();
 }
+
+#[test]
+fn an_execution_confirmed_but_not_terminated_is_in_doubt_at_restart() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut journal = CommandJournal::open(dir.path().join("critical.db")).expect("opens");
+    ready(&mut journal, "c1", "S3/TC_101");
+    journal
+        .record_intent("c1", State::ExecuteSent, T0)
+        .expect("intent");
+    journal
+        .record_result("c1", State::ExecuteSent, T0, "sent")
+        .expect("result");
+    journal
+        .move_to("c1", State::ExecuteConfirmed, T0, "")
+        .expect("confirmed");
+
+    let recovered = journal
+        .recover_partition("S3", &context(0))
+        .expect("recovers");
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].to, State::InDoubt);
+    assert_eq!(recovered[0].action, Action::Nothing);
+    assert_eq!(journal.state("c1").expect("reads"), Some(State::InDoubt));
+}

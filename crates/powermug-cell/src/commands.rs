@@ -110,6 +110,9 @@ pub struct Dispatcher {
     active_revision: Option<String>,
     /// The selections confirmed and not yet executed: a critical change fails them.
     awaiting: std::collections::BTreeSet<String>,
+    /// The executions confirmed and not yet terminated: a cut of the stream leaves them in doubt
+    /// (MVP scenario S19).
+    awaiting_termination: std::collections::BTreeSet<String>,
 }
 
 impl Dispatcher {
@@ -132,6 +135,7 @@ impl Dispatcher {
             blocked: false,
             active_revision: None,
             awaiting: std::collections::BTreeSet::new(),
+            awaiting_termination: std::collections::BTreeSet::new(),
         }
     }
 
@@ -396,6 +400,7 @@ impl Dispatcher {
             if status == pb::CommandStatus::Terminated
                 && self.journal.state(&id)? == Some(State::ExecuteConfirmed)
             {
+                self.awaiting_termination.remove(&id);
                 self.journal
                     .move_to(&id, State::TerminationConfirmed, now_ns, "")?;
                 return self
@@ -416,6 +421,8 @@ impl Dispatcher {
                 };
                 if select {
                     self.awaiting.insert(id.clone());
+                } else {
+                    self.awaiting_termination.insert(id.clone());
                 }
                 self.journal.move_to(&id, next, now_ns, "")?
             }
@@ -457,6 +464,15 @@ impl Dispatcher {
         let mut states = Vec::new();
         for (_, Open { emission, .. }) in open {
             states.push(emission.finish(Outcome::Unknown("command stream ended".into()), now_ns)?);
+        }
+        // A confirmed execution whose termination did not come back is in doubt too (S19).
+        for command_id in std::mem::take(&mut self.awaiting_termination) {
+            states.push(self.journal.move_to(
+                &command_id,
+                State::InDoubt,
+                now_ns,
+                "termination not received before the stream ended",
+            )?);
         }
         Ok(states)
     }

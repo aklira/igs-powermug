@@ -454,3 +454,59 @@ fn a_partition_without_an_active_revision_refuses_every_command() {
     drop(dispatcher);
     writer.join();
 }
+
+#[test]
+fn an_execution_confirmed_but_not_terminated_is_in_doubt_when_the_stream_is_cut() {
+    let mut h = harness(owned());
+    h.dispatcher
+        .submit(&request("c1", false), 10)
+        .expect("submits");
+    h.dispatches.try_recv().expect("dispatched");
+    assert_eq!(
+        h.dispatcher
+            .update(&answer("c1", pb::CommandStatus::Confirmed), 20)
+            .expect("updates"),
+        Some(State::ExecuteConfirmed)
+    );
+
+    // The link is cut between the activation confirmation and the end of the execution (S19).
+    assert_eq!(
+        h.dispatcher.stream_ended(30).expect("closes"),
+        vec![State::InDoubt]
+    );
+    // A termination that arrives later does not replay or complete the command.
+    assert_eq!(
+        h.dispatcher
+            .update(&answer("c1", pb::CommandStatus::Terminated), 40)
+            .expect("updates"),
+        None
+    );
+    assert!(h.dispatches.try_recv().is_err(), "nothing is replayed");
+    assert_eq!(
+        h.dispatcher
+            .submit(&request("c1", false), 50)
+            .expect("again"),
+        State::InDoubt
+    );
+    h.finish();
+}
+
+#[test]
+fn ten_thousand_submissions_of_one_command_are_dispatched_once() {
+    // ACC-002, reduced to the dispatcher: the same command_id submitted 10 000 times is sent once.
+    let mut h = harness(owned());
+    let mut dispatched = 0_u32;
+    for attempt in 0..10_000_u32 {
+        h.dispatcher
+            .submit(&request("c1", false), 10 + i64::from(attempt))
+            .expect("submits");
+        while let Ok(_dispatch) = h.dispatches.try_recv() {
+            dispatched += 1;
+        }
+    }
+    assert_eq!(
+        dispatched, 1,
+        "one execution is sent, however many submissions"
+    );
+    h.finish();
+}

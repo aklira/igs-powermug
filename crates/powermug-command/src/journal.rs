@@ -152,8 +152,6 @@ pub enum Action {
     Hold,
     /// The selection was sent: wait for the expiry before any new selection.
     AwaitExpiry,
-    /// The execution was confirmed: wait for the termination.
-    AwaitTermination,
     /// The termination was confirmed: verify the field effect if the policy asks it.
     VerifyIfRequired,
     /// Nothing to do.
@@ -799,7 +797,15 @@ fn decide(command: &Pending, context: &RecoveryContext) -> (Option<(State, &'sta
             Some((State::InDoubt, "execution sent without confirmation")),
             Action::Nothing,
         ),
-        State::ExecuteConfirmed => (None, Action::AwaitTermination),
+        // Confirmed but not terminated: the termination may have been lost with the link, and the
+        // execution is never replayed. In doubt, as the MVP scenario S19 requires.
+        State::ExecuteConfirmed => (
+            Some((
+                State::InDoubt,
+                "termination not received before the restart",
+            )),
+            Action::Nothing,
+        ),
         State::TerminationConfirmed => (None, Action::VerifyIfRequired),
         _ => (None, Action::Nothing),
     }
