@@ -84,6 +84,7 @@ impl Handler for ReadOnly {
 #[must_use]
 pub fn capabilities(options: &ServeOptions) -> pb::Capabilities {
     pb::Capabilities {
+        destination: String::new(),
         api_version: Some(pb::Version { major: 1, minor: 0 }),
         pivot_versions: vec![pb::Version { major: 1, minor: 0 }],
         protocols: vec![pb::Protocol {

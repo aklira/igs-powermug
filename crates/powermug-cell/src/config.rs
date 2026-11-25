@@ -30,6 +30,28 @@ pub struct CellConfig {
     pub commands: CommandsConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    /// The flux destinations of the North side. Each has a cursor and its own retry policy
+    /// (FUN-SAF-004); a destination names its starting point (PM-TEL-004).
+    #[serde(default)]
+    pub destinations: Vec<DestinationConfig>,
+}
+
+/// A flux destination of the North side: the name its adapter announces, and where it starts.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DestinationConfig {
+    pub name: String,
+    pub start: DestinationStart,
+}
+
+/// Where a destination starts (PM-TEL-004, FUN-SAF-009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationStart {
+    /// The events journaled from now on.
+    Now,
+    /// The oldest event still retained.
+    OldestRetained,
 }
 
 /// The storage of the cell (PM-TEL-006). The telemetry and the critical stores are on separate
@@ -184,6 +206,8 @@ pub struct PointConfig {
 /// The configuration is not usable.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
+    #[error("a flux destination is not valid: {0}")]
+    BadDestination(String),
     #[error("the configuration is not valid JSON or has an unknown member: {0}")]
     Syntax(String),
     #[error("the cell has no name")]
@@ -243,6 +267,20 @@ impl CellConfig {
     fn check(&self) -> Result<(), ConfigError> {
         if self.cell.trim().is_empty() {
             return Err(ConfigError::NoCellName);
+        }
+        let mut names = HashSet::new();
+        for destination in &self.destinations {
+            if destination.name.trim().is_empty() {
+                return Err(ConfigError::BadDestination(
+                    "a destination has no name".into(),
+                ));
+            }
+            if !names.insert(destination.name.as_str()) {
+                return Err(ConfigError::BadDestination(format!(
+                    "{} is declared twice",
+                    destination.name
+                )));
+            }
         }
         if self.lanes.is_empty() {
             return Err(ConfigError::NoLane);

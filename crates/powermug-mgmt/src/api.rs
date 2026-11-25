@@ -40,6 +40,12 @@ pub struct Api {
 }
 
 impl Api {
+    /// The source of the indicators the API serves.
+    #[must_use]
+    pub fn indicator_source(&self) -> Arc<dyn IndicatorSource> {
+        Arc::clone(&self.indicators)
+    }
+
     /// The API over `store`, for the target `profile`. Signed plans are verified
     /// against `trusted_key` (§10.6).
     #[must_use]

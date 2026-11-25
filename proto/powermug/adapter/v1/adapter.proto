@@ -73,6 +73,9 @@ message Capabilities {
   repeated string hardware_dependencies = 7;
   // SHA-256 of the adapter artifact, lowercase hex.
   string artifact_sha256 = 8;
+  // The name of the destination this North adapter serves, as the cell's configuration declares
+  // it. Empty for a South adapter. An unknown name is refused.
+  string destination = 11;
   // Version of the protocol library the adapter links.
   string protocol_library_version = 9;
   // JSON Schema (draft 2020-12) of the adapter settings, with the value domain
@@ -225,6 +228,9 @@ message InterrogateRequest {
 message DeliveryBatch {
   uint64 sequence = 1;
   repeated powermug.pivot.v1.Envelope events = 2;
+  // The journal sequence of the last journaled event of the batch: the acknowledgement moves the
+  // destination's cursor to it. Zero when the batch holds no journaled event.
+  int64 last_seq = 3;
 }
 
 // The adapter has applied the batch with this sequence number.

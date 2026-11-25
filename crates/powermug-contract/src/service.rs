@@ -270,7 +270,11 @@ impl AdapterData for CoreService {
                         let sequence = next_sequence;
                         next_sequence += 1;
                         unacknowledged.insert(sequence);
-                        let delivery = DeliveryBatch { sequence, events: batch };
+                        let delivery = DeliveryBatch {
+                            sequence,
+                            events: batch,
+                            last_seq: 0,
+                        };
                         if tx.send(Ok(delivery)).await.is_err() {
                             return;
                         }

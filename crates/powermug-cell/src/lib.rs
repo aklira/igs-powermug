@@ -89,6 +89,60 @@ pub struct CellIndicators {
     lanes: Vec<Arc<Mutex<Lane>>>,
     commands: powermug_command::CommandClient,
     sites: Vec<String>,
+    /// The directories of the telemetry and the critical stores: each volume is measured.
+    telemetry_dir: std::path::PathBuf,
+    critical_dir: std::path::PathBuf,
+}
+
+/// Declares the cursor of each flux destination with its starting point (PM-TEL-004).
+fn declare_destinations(config: &CellConfig, now_ns: i64) -> Result<(), CellError> {
+    if config.destinations.is_empty() {
+        return Ok(());
+    }
+    let mut log = powermug_store::TelemetryLog::open(&config.telemetry_db)?;
+    for destination in &config.destinations {
+        let start = match destination.start {
+            config::DestinationStart::Now => powermug_store::Start::Now,
+            config::DestinationStart::OldestRetained => powermug_store::Start::OldestRetained,
+        };
+        log.declare_cursor(&destination.name, true, start, now_ns)?;
+    }
+    Ok(())
+}
+
+/// The source of the indicators of the cell: the lanes, the commands in doubt per site, and the
+/// free share of the volumes of the two stores.
+fn indicator_source(
+    config: &CellConfig,
+    lanes: &[Arc<Mutex<Lane>>],
+    commands: &powermug_command::CommandClient,
+) -> Arc<dyn IndicatorSource> {
+    let mut sites: Vec<String> = config.lanes.iter().map(|lane| lane.site.clone()).collect();
+    sites.dedup();
+    let dir_of = |path: &std::path::Path| {
+        path.parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf()
+    };
+    Arc::new(CellIndicators {
+        lanes: lanes.to_vec(),
+        commands: commands.clone(),
+        sites,
+        telemetry_dir: dir_of(&config.telemetry_db),
+        critical_dir: dir_of(&config.critical_db),
+    })
+}
+
+/// The free share of the filesystem holding `dir`, in percent, when it can be read.
+fn free_percent(dir: &std::path::Path) -> Option<f64> {
+    let stat = nix::sys::statvfs::statvfs(dir).ok()?;
+    let blocks = stat.blocks();
+    if blocks == 0 {
+        return None;
+    }
+    let percent = stat.blocks_available().saturating_mul(100) / blocks;
+    Some(f64::from(u32::try_from(percent).unwrap_or(u32::MAX)))
 }
 
 impl IndicatorSource for CellIndicators {
@@ -112,6 +166,21 @@ impl IndicatorSource for CellIndicators {
                 session: None,
                 value,
                 unit: "count",
+                measured_at_ns: now_wall_ns,
+            });
+        }
+        // The free share of each store's volume (scope target): not measured when unreadable.
+        for (name, dir) in [
+            ("disk_free_percent", &self.telemetry_dir),
+            ("cell_disk_free_percent", &self.critical_dir),
+        ] {
+            indicators.push(Indicator {
+                name,
+                scope: "target",
+                site: None,
+                session: None,
+                value: free_percent(dir),
+                unit: "percent",
                 measured_at_ns: now_wall_ns,
             });
         }
@@ -157,17 +226,12 @@ impl Cell {
         }
         drop(journal);
         let critical = CriticalStore::open(&config.critical_db)?;
+        declare_destinations(config, clock.now().wall_ns)?;
         // The command journal lives in the critical store's file, on its own connection.
         let (commands, command_writer) =
             powermug_command::CommandWriter::spawn(&config.critical_db)?;
         let audit = commands.clone();
-        let mut sites: Vec<String> = config.lanes.iter().map(|lane| lane.site.clone()).collect();
-        sites.dedup();
-        let indicators: Arc<dyn IndicatorSource> = Arc::new(CellIndicators {
-            lanes: lanes.clone(),
-            commands: commands.clone(),
-            sites,
-        });
+        let indicators = indicator_source(config, &lanes, &commands);
         // Each session's dispatcher has the empty ACL and no owner: until the configuration
         // grants a command and the partition has an owner, every command is refused. Its
         // commands must cite the partition's active revision, read from the critical store.
