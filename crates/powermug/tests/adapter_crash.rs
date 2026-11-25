@@ -4,7 +4,6 @@
 //! again, and keep the adapter's restart from repeating it.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,12 +26,12 @@ use tokio::sync::watch;
 
 const BIN: &str = env!("CARGO_BIN_EXE_powermug");
 const COMMAND_IOA: u32 = 3;
+const STATION_DIR: &str = "POWERMUG_STATION_DIR";
 
-/// Accepts every selection. Takes the execution: records it, and blocks until the test has
-/// killed the adapter, so that no answer is ever sent.
+/// The station, in its own process: it accepts every selection, and takes the execution, records
+/// it, and blocks for four seconds before it would answer. The test kills the adapter meanwhile.
 struct StallingExecution {
-    executions: Arc<AtomicUsize>,
-    entered: Arc<AtomicBool>,
+    dir: std::path::PathBuf,
 }
 
 impl Handler for StallingExecution {
@@ -41,76 +40,111 @@ impl Handler for StallingExecution {
     }
 
     fn execute(&self, _operation: &Operation) -> Result<(), Refusal> {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        self.entered.store(true, Ordering::SeqCst);
+        record(&self.dir, "executions", "x");
+        record(&self.dir, "entered", "x");
         std::thread::sleep(Duration::from_secs(4));
         Ok(())
     }
 }
 
-struct Station {
-    addr: SocketAddr,
-    stop: tokio::sync::oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<()>,
-    executions: Arc<AtomicUsize>,
-    entered: Arc<AtomicBool>,
+fn record(dir: &std::path::Path, name: &str, line: &str) {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(name))
+        .expect("opens the record");
+    writeln!(file, "{line}").expect("writes the record");
 }
 
-async fn start_station() -> Station {
-    let executions = Arc::new(AtomicUsize::new(0));
-    let entered = Arc::new(AtomicBool::new(false));
-    let server = Server::bind(
-        ServerConfig::new(
-            "127.0.0.1:0".parse::<SocketAddr>().expect("addr"),
-            CommonAddress::new(1),
-        ),
-        StallingExecution {
-            executions: Arc::clone(&executions),
-            entered: Arc::clone(&entered),
-        },
-    )
-    .await
-    .expect("station binds");
-    let addr = server.local_addr().expect("address");
-    let handle = server.handle();
-    handle
-        .add_point(
-            InformationObjectAddress::new(1).expect("address"),
-            PointValue::Single(Siq {
-                on: true,
-                quality: QualityFlags::default(),
-            }),
-            false,
+fn count(dir: &std::path::Path, name: &str) -> usize {
+    std::fs::read_to_string(dir.join(name)).map_or(0, |text| text.lines().count())
+}
+
+/// The child: the station of the test, run in its own process so that its stall cannot block the
+/// core of the test. It writes its address, and serves until the test kills it.
+#[test]
+fn station_child() {
+    let Ok(dir) = std::env::var(STATION_DIR) else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let server = Server::bind(
+            ServerConfig::new(
+                "127.0.0.1:0".parse::<SocketAddr>().expect("addr"),
+                CommonAddress::new(1),
+            ),
+            StallingExecution { dir: dir.clone() },
         )
-        .expect("status point");
-    handle
-        .add_point(
-            InformationObjectAddress::new(COMMAND_IOA).expect("address"),
-            PointValue::Single(Siq {
-                on: false,
-                quality: QualityFlags::default(),
-            }),
-            false,
-        )
-        .expect("commandable point");
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let task = tokio::spawn(async move {
-        let _ = server
-            .run_until(
-                async {
-                    let _ = stopped.await;
-                },
-                Duration::ZERO,
+        .await
+        .expect("station binds");
+        let addr = server.local_addr().expect("address");
+        let handle = server.handle();
+        handle
+            .add_point(
+                InformationObjectAddress::new(1).expect("address"),
+                PointValue::Single(Siq {
+                    on: true,
+                    quality: QualityFlags::default(),
+                }),
+                false,
             )
+            .expect("status point");
+        handle
+            .add_point(
+                InformationObjectAddress::new(COMMAND_IOA).expect("address"),
+                PointValue::Single(Siq {
+                    on: false,
+                    quality: QualityFlags::default(),
+                }),
+                false,
+            )
+            .expect("commandable point");
+        std::fs::write(dir.join("station.addr"), addr.to_string()).expect("writes the address");
+        let _ = server
+            .run_until(std::future::pending::<()>(), Duration::ZERO)
             .await;
     });
-    Station {
-        addr,
-        stop,
-        task,
-        executions,
-        entered,
-    }
+}
+
+/// Starts the station in a child process and returns its address and the child. The child is
+/// killed when the station does not start in time.
+fn start_station(dir: &std::path::Path) -> (SocketAddr, std::process::Child) {
+    let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args([
+            "--exact",
+            "station_child",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(STATION_DIR, dir)
+        .spawn()
+        .expect("starts the station");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let address = loop {
+        let found = std::fs::read_to_string(dir.join("station.addr"))
+            .ok()
+            .and_then(|text| text.parse::<SocketAddr>().ok());
+        if let Some(address) = found {
+            break Some(address);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let Some(address) = address else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the station did not start");
+    };
+    (address, child)
 }
 
 fn configuration(dir: &std::path::Path, station: SocketAddr) -> CellConfig {
@@ -212,16 +246,11 @@ fn request(command_id: &str, operation: &str, select: bool) -> Request {
     }
 }
 
-/// Known defect, not fixed yet: while the station stalls for more than three seconds, the adapter
-/// stops running its loop (no health report, no event), and the core kills it as silent. The
-/// command in flight is then in doubt, as this test checks, but the adapter is lost along with
-/// the session. Run with `--ignored` to reproduce.
-#[ignore = "reproduces a silent adapter during a station stall longer than three seconds"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_command_in_flight_when_the_adapter_dies_is_in_doubt_and_never_sent_again() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let station = start_station().await;
-    let config = configuration(dir.path(), station.addr);
+    let (station_addr, mut station) = start_station(dir.path());
+    let config = configuration(dir.path(), station_addr);
     let lane = Arc::new(Mutex::new(Lane::new(
         config.lanes[0].table().expect("table"),
         TelemetryLog::open(dir.path().join("lane-telemetry.db")).expect("opens"),
@@ -294,7 +323,7 @@ async fn a_command_in_flight_when_the_adapter_dies_is_in_doubt_and_never_sent_ag
         .execute("c1", "scada-demo", now_ns())
         .expect("executes");
     assert!(
-        wait_until(|| station.entered.load(Ordering::SeqCst), 30).await,
+        wait_until(|| count(dir.path(), "entered") > 0, 30).await,
         "the execution did not reach the station"
     );
 
@@ -315,15 +344,15 @@ async fn a_command_in_flight_when_the_adapter_dies_is_in_doubt_and_never_sent_ag
 
     // Let the station's execution finish, and the restarted adapter run: nothing is sent again.
     tokio::time::sleep(Duration::from_secs(5)).await;
-    let executions = station.executions.load(Ordering::SeqCst);
+    let executions = count(dir.path(), "executions");
 
     let _ = stop.send(true);
     let outcome = tokio::time::timeout(Duration::from_secs(20), supervisor)
         .await
         .expect("the supervisor stops with the cell")
         .expect("joins");
-    let _ = station.stop.send(());
-    let _ = station.task.await;
+    let _ = station.kill();
+    let _ = station.wait();
 
     assert!(in_doubt, "the command in flight was not classed in doubt");
     assert_eq!(executions, 1, "the execution was sent once, never again");
