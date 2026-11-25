@@ -3,12 +3,16 @@
 //! exits before the adapter answers. A cell opened afterwards classes the command in doubt, and
 //! never sends it again.
 
-use powermug_cell::commands::{channel, CommandRoute, Dispatcher, Request};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use powermug_cell::commands::{channel, CommandRoute, Dispatcher, Gateway, Request, Route};
 use powermug_cell::config::{acl_of_rules, CellConfig};
 use powermug_cell::Cell;
 use powermug_command::ownership::Ownership;
 use powermug_command::{CommandWriter, Granularity, State};
 use powermug_contract::proto::v1 as pb;
+use powermug_mgmt::CommandGateway;
 use powermug_revision::partition::CommandRule;
 
 const CHILD_TEST: &str = "crash_child";
@@ -105,6 +109,74 @@ fn a_command_sent_before_a_crash_is_in_doubt_when_the_cell_reopens() {
         .expect("runs the child");
     assert_eq!(status.code(), Some(CRASH_EXIT));
 
+    let cell = Cell::open(&config, trusted_key()).expect("opens");
+    let outcome = cell
+        .recovery
+        .iter()
+        .find(|outcome| outcome.command_id == "c1")
+        .expect("decided");
+    assert_eq!(outcome.to, State::InDoubt);
+    assert_eq!(outcome.action, powermug_command::Action::Nothing);
+    cell.close();
+}
+
+const BLOCK_DIR: &str = "POWERMUG_CRASH_BLOCK_DIR";
+
+/// The child: submits the command, then starts a critical change of the partition, and exits
+/// before the activation takes effect.
+#[test]
+fn crash_during_block_child() {
+    let Ok(dir) = std::env::var(BLOCK_DIR) else {
+        return;
+    };
+    let (client, _writer) =
+        CommandWriter::spawn(std::path::Path::new(&dir).join("critical.db")).expect("spawns");
+    let mut ownership = Ownership::new();
+    ownership.takeover("S3");
+    let (to_adapter, _queued) = channel(8);
+    let route = CommandRoute::new();
+    route.attach(to_adapter);
+    let mut dispatcher = Dispatcher::new(client, acl_of_rules(&[rule()]), ownership, route.clone());
+    dispatcher.set_active_revision(Some("r1".into()));
+    let dispatcher = Arc::new(Mutex::new(dispatcher));
+    let state = dispatcher
+        .lock()
+        .expect("lock")
+        .submit(&request(), 1_000)
+        .expect("submits");
+    assert_eq!(state, State::Ready);
+
+    let mut routes = BTreeMap::new();
+    routes.insert(
+        "S3/TC_101".to_owned(),
+        Route {
+            dispatcher,
+            partition: "S3".to_owned(),
+            address: 5,
+        },
+    );
+    Gateway::new(routes).begin_critical_change("S3");
+    std::process::exit(CRASH_EXIT);
+}
+
+#[test]
+fn a_critical_change_that_stops_before_its_activation_leaves_in_flight_commands_in_doubt() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = config(dir.path());
+
+    let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args([
+            "--exact",
+            "crash_during_block_child",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(BLOCK_DIR, dir.path())
+        .status()
+        .expect("runs the child");
+    assert_eq!(status.code(), Some(CRASH_EXIT));
+
+    // Nothing was activated: the partition has no active revision, and the command is in doubt.
     let cell = Cell::open(&config, trusted_key()).expect("opens");
     let outcome = cell
         .recovery
